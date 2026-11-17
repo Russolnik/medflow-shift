@@ -17,6 +17,8 @@ const SYSTEM_STEPS = [
   { id: 'other', label: 'Другое' }
 ];
 
+const SORT_MODES = ['priority', 'time-asc', 'time-desc'];
+
 function uid() {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
@@ -52,7 +54,8 @@ const seed = {
     }
   ],
   archive: [],
-  directions: clone(DEFAULT_DIRECTIONS)
+  directions: clone(DEFAULT_DIRECTIONS),
+  settings: { sortMode: 'priority' }
 };
 
 let state = load();
@@ -71,6 +74,8 @@ function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
   next.patients = Array.isArray(next.patients) ? next.patients : [];
   next.archive = Array.isArray(next.archive) ? next.archive : [];
+  next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
+  if (!SORT_MODES.includes(next.settings.sortMode)) next.settings.sortMode = 'priority';
   if (!Array.isArray(next.directions)) next.directions = clone(DEFAULT_DIRECTIONS);
   next.directions = next.directions
     .filter(item => item && item.id && String(item.label || '').trim())
@@ -106,6 +111,40 @@ function score(patient) {
   if (step.time) return 2000;
   return 1000;
 }
+function parseTime(value) {
+  const match = /^(\d{2}):(\d{2})$/.exec(String(value || ''));
+  if (!match) return null;
+  const hours = Number(match[1]), minutes = Number(match[2]);
+  return hours < 24 && minutes < 60 ? hours * 60 + minutes : null;
+}
+function patientTimeMinutes(patient) {
+  const pending = patient.steps.filter(step => !['done','cancelled'].includes(step.state));
+  const source = pending.length ? pending : patient.steps.filter(step => step.state === 'done');
+  const times = source.map(step => parseTime(step.time)).filter(value => value !== null);
+  return times.length ? Math.min(...times) : null;
+}
+function comparePatients(a, b, mode=state.settings.sortMode) {
+  if (mode === 'priority') return score(b) - score(a);
+  const fixedPriority = patient => patient.pinned ? 3 : (currentStep(patient)?.urgent || patient.priority === 'urgent') ? 2 : hasTodayOperation(patient) ? 1 : 0;
+  const priorityDifference = fixedPriority(b) - fixedPriority(a);
+  if (priorityDifference) return priorityDifference;
+  const aTime = patientTimeMinutes(a), bTime = patientTimeMinutes(b);
+  if (aTime === null && bTime === null) return score(b) - score(a);
+  if (aTime === null) return 1;
+  if (bTime === null) return -1;
+  const timeDifference = mode === 'time-desc' ? bTime - aTime : aTime - bTime;
+  return timeDifference || score(b) - score(a);
+}
+function sortPatients(patients, mode=state.settings.sortMode) {
+  return [...patients].sort((a,b) => comparePatients(a,b,mode));
+}
+function sortControl() {
+  return `<div class="sort-control"><label for="sort-mode">Сортировка</label><select id="sort-mode" data-sort-mode>
+    <option value="priority" ${state.settings.sortMode==='priority'?'selected':''}>По приоритету</option>
+    <option value="time-asc" ${state.settings.sortMode==='time-asc'?'selected':''}>По времени: сначала ранние</option>
+    <option value="time-desc" ${state.settings.sortMode==='time-desc'?'selected':''}>По времени: сначала поздние</option>
+  </select></div>`;
+}
 function blockLabel(block) { return ({gxo:'ГХО',xo:'ХО',angio:'АНГИО'})[block] || ''; }
 function typeLabel(type) {
   return getDirections().find(item => item.id === type)?.label || SYSTEM_STEPS.find(item => item.id === type)?.label || type;
@@ -137,8 +176,8 @@ function actionLabel(step) {
 }
 
 function render() {
-  const active = state.patients.filter(p => !isComplete(p)).sort((a,b) => score(b)-score(a));
-  const completed = state.patients.filter(isComplete);
+  const active = sortPatients(state.patients.filter(p => !isComplete(p)));
+  const completed = sortPatients(state.patients.filter(isComplete));
   const ops = state.patients.filter(hasTodayOperation).length;
   const inOr = state.patients.filter(p => p.steps.some(s => ['in_or','pickup'].includes(s.state))).length;
   document.getElementById('app').innerHTML = `
@@ -147,6 +186,7 @@ function render() {
         <div class="brand"><div class="logo">M</div><div><h1>MedFlow</h1><div class="eyebrow">Личная смена · демо-данные</div></div></div>
         <button class="icon-btn" data-action="add">＋ Записать</button>
       </header>
+      ${view !== 'history' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : historyView()}
     </main>
     <nav class="nav">
@@ -187,12 +227,12 @@ function todayView(active, completed, ops, inOr) {
 }
 
 function directionsView() {
-  const dirs = [{id:'all',label:'Все'}, ...getDirections()];
+  const dirs = [{id:'all',label:'Все'}, ...getDirections(), {id:'other',label:'Другое'}];
   const patients = state.patients.filter(p => p.steps.some(s=>stepMatchesDirection(s,direction)));
-  const waiting = patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && !['done','cancelled'].includes(s.state))).sort((a,b)=>score(b)-score(a));
-  const done = patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && s.state==='done')).sort((a,b)=>score(b)-score(a));
+  const waiting = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && !['done','cancelled'].includes(s.state))));
+  const done = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && s.state==='done')));
   return `
-    <div class="section-head directions-head"><div><h2>По направлениям</h2><span>ожидают и выполненные</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
+    <div class="section-head directions-head"><div><h2>По направлениям</h2><span>операции, процедуры и другое</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     <div class="filters">${dirs.map(d=>`<button class="chip ${direction===d.id?'active':''}" data-direction="${esc(d.id)}">${esc(d.label)}</button>`).join('')}</div>
     <div class="section-head"><h2>Ожидают</h2><span>${waiting.length}</span></div>
     <div class="patient-list">${waiting.map(compactPatientCard).join('') || '<div class="empty">Никого не ожидает</div>'}</div>
@@ -233,8 +273,8 @@ function compactPatientCard(p) {
       <div class="compact-copy">
         <div class="current-label">Сейчас</div>
         <div class="compact-title">${step ? esc(stepTitle(step)) : 'Маршрут завершён'}</div>
-        ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${step.needsClarification?'<span>⚠ уточнить данные</span>':''}</div>` : ''}
-        ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>esc(s.title)).join(' → ')}</div>` : ''}
+        ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${step.time?`<span>◷ ${esc(step.time)}</span>`:''}${step.needsClarification?'<span>⚠ уточнить данные</span>':''}</div>` : ''}
+        ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>`${esc(s.title)}${s.time?` · ${esc(s.time)}`:''}`).join(' → ')}</div>` : ''}
       </div>
       ${orStep ? `<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>` : ''}
     </div>
@@ -268,7 +308,7 @@ function modalView() {
     if (!p) return '';
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <div class="row between"><div><h2>${esc(p.surname)} · палата ${esc(p.room || 'уточнить')}</h2><p class="modal-sub">Полная карточка пациента</p></div>${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:''}</div>
-      <div class="detail-block"><div class="current-label">Маршрут на сегодня</div><div class="route-detail">${p.steps.map((s,i)=>`<div class="route-detail-item ${s.state==='done'?'done':s===currentStep(p)?'active':''}"><span>${s.state==='done'?'✓':i+1}</span><b>${esc(s.title)}</b></div>`).join('')}</div></div>
+      <div class="detail-block"><div class="current-label">Маршрут на сегодня</div><div class="route-detail">${p.steps.map((s,i)=>`<div class="route-detail-item ${s.state==='done'?'done':s===currentStep(p)?'active':''}"><span>${s.state==='done'?'✓':i+1}</span><b>${esc(s.title)}${s.time?` <small>· ${esc(s.time)}</small>`:''}</b></div>`).join('')}</div></div>
       <div class="detail-grid"><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
       ${p.note?`<div class="note">${esc(p.note)}</div>`:''}
       <div class="patient-list detail-actions">
@@ -286,7 +326,8 @@ function modalView() {
   if (modal.type === 'edit-patient') {
     const p = state.patients.find(x => x.id === modal.patient);
     if (!p) return '';
-    const urgent = currentStep(p)?.urgent || p.priority === 'urgent';
+    const editedStep = currentStep(p);
+    const urgent = editedStep?.urgent || p.priority === 'urgent';
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <h2>Данные карточки</h2><p class="modal-sub">Быстрая правка без изменения маршрута</p>
       <form id="edit-patient-form" class="form-grid">
@@ -298,6 +339,7 @@ function modalView() {
         <div class="field"><label>Оперблок</label><select name="block">
           <option value="" ${!p.block?'selected':''}>Не указан</option><option value="gxo" ${p.block==='gxo'?'selected':''}>ГХО</option><option value="xo" ${p.block==='xo'?'selected':''}>ХО</option><option value="angio" ${p.block==='angio'?'selected':''}>Ангио</option>
         </select></div>
+        <div class="field"><label>Время текущего этапа</label><input type="time" name="time" value="${esc(editedStep?.time || '')}" /></div>
         <label class="urgent-toggle full"><input type="checkbox" name="urgent" ${urgent?'checked':''} /><span><b>Срочно</b><small>Поднять пациента наверх очереди</small></span></label>
         <div class="field full"><label>Заметка</label><textarea name="note" placeholder="Короткое уточнение">${esc(p.note || '')}</textarea></div>
       </form>
@@ -317,8 +359,8 @@ function modalView() {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <h2>Цепочка · ${esc(p?.surname || '')}</h2><p class="modal-sub">Расставь этапы в любом порядке</p>
-      <div class="route-editor">${modal.steps.map((s,i)=>{const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';return `<div class="route-editor-item ${movable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" />${movable?'':'<small>Порядок текущего или завершённого этапа защищён</small>'}</div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
-      <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
+      <div class="route-editor">${modal.steps.map((s,i)=>{const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';return `<div class="route-editor-item ${movable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" /><input class="route-time-input" type="time" data-route-time="${i}" value="${esc(s.time || '')}" aria-label="Время этапа ${i+1}" />${movable?'':'<small>Порядок текущего или завершённого этапа защищён</small>'}</div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
+      <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><input id="route-time" type="time" aria-label="Время нового этапа" /><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
       <div class="modal-actions"><button class="secondary-btn" data-action="details" data-patient="${modal.patient}">Назад</button><button class="primary-btn" data-action="route-save" data-patient="${modal.patient}">Сохранить цепочку</button></div>
     </section></div>`;
   }
@@ -330,6 +372,7 @@ function modalView() {
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно позже" /></div>
         <div class="field"><label>Что сейчас</label><select name="type">${directionOptions('', true)}</select></div>
         <div class="field"><label>Уточнение</label><input name="title" placeholder="Например, ХО или срочное КТ" /></div>
+        <div class="field"><label>Время</label><input type="time" name="time" /></div>
         <label class="urgent-toggle"><input type="checkbox" name="urgent" /><span><b>Срочно</b><small>Поднять поручение наверх</small></span></label>
       </form>
       <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="submit-quick">Записать</button></div>
@@ -345,6 +388,7 @@ function modalView() {
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно уточнить позже" /></div>
         <div class="field"><label>Ближайшее действие</label><select name="type">${directionOptions('', true)}</select></div>
         <div class="field"><label>Куда везти</label><input required name="destination" placeholder="ХО, КТ, кабинет…" /></div>
+        <div class="field"><label>Время ближайшего действия</label><input type="time" name="time" /></div>
         <div class="field"><label>Способ передвижения</label><select name="transport"><option value="">Уточнить позже</option><option>Пешком с сопровождением</option><option>Кресло</option><option>Каталка</option></select></div>
         <div class="field"><label>Оперблок (только для операции)</label><select name="block"><option value="">Не указан</option><option value="gxo">ГХО</option><option value="xo">ХО</option><option value="angio">Ангио</option></select></div>
         <div class="field full"><label>Что ещё предстоит сегодня</label><div class="direction-checks">${getDirections().map(item=>`<label><input type="checkbox" name="extra-direction" value="${esc(item.id)}" /> ${esc(item.label)}</label>`).join('')}</div></div>
@@ -391,7 +435,9 @@ function modalView() {
 function bind() {
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view; render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render();});
+  document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
+  document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
   document.querySelectorAll('[data-direction-name]').forEach(el=>el.oninput=()=>{ const item=modal?.directions?.find(item=>item.id===el.dataset.directionName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
 }
@@ -439,7 +485,7 @@ function handleAction(action, el, e) {
     const newLabels=new Map(cleaned.map(item=>[item.id,item.label]));
     state.patients.forEach(patient=>patient.steps.forEach(step=>{ if(newLabels.has(step.type) && step.title===oldLabels.get(step.type)) step.title=newLabels.get(step.type); }));
     state.directions=cleaned;
-    if(direction!=='all' && !cleaned.some(item=>item.id===direction)) direction='all';
+    if(direction!=='all' && direction!=='other' && !cleaned.some(item=>item.id===direction)) direction='all';
     modal=null; save(); return render();
   }
   if (action==='details') { modal={type:'details',patient:el.dataset.patient}; return render(); }
@@ -449,7 +495,7 @@ function handleAction(action, el, e) {
     const fd=new FormData(form), p=state.patients.find(p=>p.id===el.dataset.patient), step=currentStep(p);
     p.surname=fd.get('surname').trim(); p.room=fd.get('room').trim(); p.transport=fd.get('transport'); p.block=fd.get('block'); p.note=fd.get('note').trim();
     const urgent=fd.get('urgent')==='on';
-    if(step) { step.urgent=urgent; step.needsClarification=!p.room||!p.transport; }
+    if(step) { step.urgent=urgent; step.time=fd.get('time') || ''; step.needsClarification=!p.room||!p.transport; }
     syncPatientPriority(p,urgent);
     log(p,'Данные карточки изменены'); modal={type:'details',patient:p.id}; save(); return render();
   }
@@ -467,7 +513,8 @@ function handleAction(action, el, e) {
   if (action==='route-add') {
     const type=document.getElementById('route-type').value;
     const custom=document.getElementById('route-custom').value.trim();
-    modal.steps.push({id:uid(),type,title:custom||typeLabel(type),state:'waiting'});
+    const time=document.getElementById('route-time').value;
+    modal.steps.push({id:uid(),type,title:custom||typeLabel(type),time,state:'waiting'});
     return render();
   }
   if (action==='route-save') {
@@ -515,7 +562,7 @@ function handleAction(action, el, e) {
     const form=document.getElementById('quick-form'); if(!form.reportValidity()) return;
     const fd=new FormData(form), type=fd.get('type'), urgent=fd.get('urgent')==='on';
     const title=fd.get('title').trim() || typeLabel(type);
-    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),block:'',transport:'',priority:'normal',pinned:false,steps:[{id:uid(),type,title,state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
+    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),block:'',transport:'',priority:'normal',pinned:false,steps:[{id:uid(),type,title,time:fd.get('time')||'',state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
     state.patients.push(p); modal=null; save(); return render();
@@ -525,7 +572,7 @@ function handleAction(action, el, e) {
     const fd=new FormData(form), type=fd.get('type'), urgent=fd.get('urgent')==='1';
     let types=fd.getAll('extra-direction').map(String); if(!types.includes(type))types.unshift(type);
     types=[...new Set(types)];
-    const steps=types.map((t,i)=>({id:uid(),type:t,title:t===type?fd.get('destination'):typeLabel(t),state:i===0?'active':'waiting',urgent:urgent&&i===0,needsClarification:!fd.get('room')||!fd.get('transport')}));
+    const steps=types.map((t,i)=>({id:uid(),type:t,title:t===type?fd.get('destination'):typeLabel(t),time:i===0?(fd.get('time')||''):'',state:i===0?'active':'waiting',urgent:urgent&&i===0,needsClarification:!fd.get('room')||!fd.get('transport')}));
     const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),block:fd.get('block'),transport:fd.get('transport'),priority:'normal',pinned:false,steps,note:fd.get('note'),events:[]};
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня'); state.patients.push(p); modal=null; save(); return render();
@@ -548,6 +595,6 @@ function handleAction(action, el, e) {
   if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=clone(seed); modal=null; view='today'; save(); return render(); }
 }
 
-globalThis.__MEDFLOW_TEST__={currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection};
+globalThis.__MEDFLOW_TEST__={currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients};
 setInterval(()=>{ if(document.querySelector('.timer')) render(); },30000);
 render();

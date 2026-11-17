@@ -134,4 +134,47 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(custom.directions.find(item => item.id === 'operation').locked, true);
 }
 
-console.log('MedFlow: 12 сценариев пройдены');
+{
+  assert.equal(api.parseTime('08:30'), 510);
+  assert.equal(api.parseTime('23:59'), 1439);
+  assert.equal(api.parseTime('24:00'), null);
+  assert.equal(api.parseTime(''), null);
+}
+
+{
+  const early = { pinned:false, priority:'normal', steps:[{...step('ЭКГ','active','ecg'),time:'08:30'}] };
+  const late = { pinned:false, priority:'normal', steps:[{...step('УЗИ','active','ultrasound'),time:'12:10'}] };
+  assert.ok(api.comparePatients(early, late, 'time-asc') < 0);
+  assert.ok(api.comparePatients(early, late, 'time-desc') > 0);
+}
+
+{
+  const timed = { pinned:false, priority:'normal', steps:[{...step('ЭКГ','active','ecg'),time:'09:00'}] };
+  const withoutTime = { pinned:false, priority:'normal', steps:[step('УЗИ','active','ultrasound')] };
+  assert.ok(api.comparePatients(timed, withoutTime, 'time-asc') < 0);
+  assert.ok(api.comparePatients(timed, withoutTime, 'time-desc') < 0);
+}
+
+{
+  const patient = {
+    pinned:false, priority:'normal',
+    steps:[{...step('ЭКГ','done','ecg'),time:'07:00'},{...step('Рентген','active','xray'),time:'11:20'}]
+  };
+  assert.equal(api.patientTimeMinutes(patient), 680);
+}
+
+{
+  const operation = { pinned:false, priority:'normal', steps:[step('Операция','active','operation')] };
+  const earlyProcedure = { pinned:false, priority:'normal', steps:[{...step('ЭКГ','active','ecg'),time:'07:00'}] };
+  assert.ok(api.comparePatients(operation, earlyProcedure, 'time-asc') < 0);
+  assert.equal(api.stepMatchesDirection(step('УВЧ','active','other'), 'other'), true);
+}
+
+{
+  const migrated = api.normalizeState({ patients:[], archive:[], directions:[{id:'operation',label:'Операция'}] });
+  assert.equal(migrated.settings.sortMode, 'priority');
+  const preserved = api.normalizeState({ patients:[], archive:[], directions:[{id:'operation',label:'Операция'}], settings:{sortMode:'time-desc'} });
+  assert.equal(preserved.settings.sortMode, 'time-desc');
+}
+
+console.log('MedFlow: 18 сценариев пройдены');
