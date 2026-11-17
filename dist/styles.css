@@ -29,6 +29,10 @@ button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 .shell { width: min(100%, 720px); margin: 0 auto; min-height: 100vh; padding: 22px 16px 104px; }
 .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; }
+.sort-control { display:flex; align-items:center; justify-content:flex-end; gap:9px; margin:-5px 0 14px; }
+.sort-control label { color:var(--muted); font-size:11px; font-weight:750; }
+.sort-control select { min-height:38px; max-width:245px; padding:7px 30px 7px 10px; border-radius:11px; color:var(--text); background:#0b1015; border:1px solid rgba(222,232,235,.11); outline:none; font-size:11px; font-weight:750; }
+.sort-control select:focus { border-color:rgba(202,220,224,.42); }
 .brand { display:flex; align-items:center; gap:11px; }
 .logo { width:42px; height:42px; display:grid; place-items:center; border-radius:13px; background:rgba(255,255,255,.018); border:1px solid rgba(208,225,226,.24); color:#d8e2e2; font-weight:900; box-shadow:0 0 18px rgba(238,246,246,.035); }
 h1,h2,h3,p { margin:0; }
@@ -153,6 +157,7 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .route-detail-item { display:flex; align-items:center; gap:9px; color:var(--muted); }
 .route-detail-item span { width:25px; height:25px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.12); border-radius:8px; font-size:11px; }
 .route-detail-item b { font-size:13px; }
+.route-detail-item b small { color:var(--muted); font-size:10px; font-weight:700; }
 .route-detail-item.active { color:var(--text); }
 .route-detail-item.active span { color:#eef2f2; background:rgba(255,255,255,.025); border-color:rgba(207,224,224,.44); }
 .route-detail-item.done { color:#70b8a9; }
@@ -165,17 +170,18 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .route-editor { display:grid; gap:8px; margin-top:17px; }
 .route-editor-item { display:flex; align-items:center; gap:9px; min-height:48px; padding:7px 8px; border:1px solid rgba(255,255,255,.07); border-radius:13px; background:rgba(0,0,0,.15); }
 .route-editor-item b { flex:1; font-size:13px; }
-.route-item-copy { min-width:0; flex:1; }
+.route-item-copy { min-width:0; flex:1; display:grid; grid-template-columns:minmax(0,1fr) 104px; gap:6px; align-items:center; }
 .route-item-copy b,.route-item-copy small { display:block; }
-.route-item-copy small { color:var(--muted); font-size:9px; margin-top:3px; }
+.route-item-copy small { grid-column:1/-1; color:var(--muted); font-size:9px; margin-top:1px; }
 .route-title-input { width:100%; min-height:34px; padding:6px 8px; border-radius:9px; color:var(--text); background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08); outline:none; font-size:13px; font-weight:750; }
-.route-title-input:focus { border-color:rgba(202,220,224,.40); }
+.route-time-input { width:100%; min-width:0; min-height:34px; padding:6px; border-radius:9px; color:var(--text); color-scheme:dark; background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08); outline:none; font-size:12px; }
+.route-title-input:focus,.route-time-input:focus { border-color:rgba(202,220,224,.40); }
 .route-editor-item.locked { background:rgba(255,255,255,.012); }
 .route-index { width:27px; height:27px; display:grid; place-items:center; border-radius:9px; color:#e6ecec; background:rgba(255,255,255,.025); border:1px solid rgba(207,224,224,.26); font-size:11px; font-weight:900; }
 .route-tools { display:flex; gap:4px; }
 .route-tools button { width:30px; height:30px; padding:0; border-radius:9px; border:1px solid rgba(255,255,255,.08); background:var(--surface-2); color:var(--text); }
 .route-tools button:disabled { opacity:.25; }
-.route-add { display:grid; grid-template-columns:1fr 1fr auto; gap:8px; margin-top:14px; }
+.route-add { display:grid; grid-template-columns:1fr 1fr 112px auto; gap:8px; margin-top:14px; }
 .route-add select,.route-add input { min-width:0; min-height:42px; border-radius:11px; padding:8px 10px; color:var(--text); background:#030a10; border:1px solid rgba(122,173,183,.17); }
 .direction-checks { display:flex; flex-wrap:wrap; gap:8px; margin-top:3px; }
 .direction-checks label { display:flex; align-items:center; gap:6px; min-height:34px; padding:7px 9px; border:1px solid rgba(255,255,255,.08); border-radius:10px; color:var(--text); background:rgba(255,255,255,.012); cursor:pointer; }
@@ -200,6 +206,10 @@ h1 { font-size:22px; letter-spacing:-.03em; }
   .stat strong { font-size:19px; }
   .form-grid { grid-template-columns:1fr; }
   .quick-form { grid-template-columns:1fr 1fr; }
+  .sort-control { justify-content:space-between; }
+  .sort-control select { flex:1; max-width:none; }
+  .route-item-copy { grid-template-columns:1fr; }
+  .route-time-input { width:118px; }
   .route-add { grid-template-columns:1fr 1fr; }
   .route-add button { grid-column:1/-1; }
   .field.full { grid-column:auto; }
