@@ -74,4 +74,64 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.esc('<script>'), '&lt;script&gt;');
 }
 
-console.log('MedFlow: 6 сценариев пройдены');
+{
+  const operationLater = {
+    pinned:false, priority:'normal',
+    steps:[step('КТ','active','ct'),step('Операция','waiting','operation')]
+  };
+  const ordinary = { pinned:false, priority:'normal', steps:[step('КТ','active','ct')] };
+  assert.equal(api.hasTodayOperation(operationLater), true);
+  assert.ok(api.score(operationLater) > api.score(ordinary));
+}
+
+{
+  const afterOperation = {
+    pinned:false, priority:'normal',
+    steps:[step('Операция','done','operation'),step('Рентген','active','xray')]
+  };
+  const ordinary = { pinned:false, priority:'normal', steps:[step('Рентген','active','xray')] };
+  assert.equal(api.hasTodayOperation(afterOperation), true);
+  assert.ok(api.score(afterOperation) > api.score(ordinary));
+}
+
+{
+  const cancelledOperation = {
+    pinned:false, priority:'operation',
+    steps:[step('Операция','cancelled','operation'),step('ЭКГ','active','ecg')]
+  };
+  const ordinary = { pinned:false, priority:'normal', steps:[step('ЭКГ','active','ecg')] };
+  assert.equal(api.hasTodayOperation(cancelledOperation), false);
+  assert.equal(api.score(cancelledOperation), api.score(ordinary));
+}
+
+{
+  const mentionedOperation = {
+    pinned:false, priority:'normal',
+    steps:[step('На операцию в ХО','waiting','other'),step('Палата','active','ward')]
+  };
+  assert.equal(api.hasTodayOperation(mentionedOperation), true);
+  assert.equal(api.stepMatchesDirection(mentionedOperation.steps[0], 'operation'), true);
+  assert.equal(api.actionLabel(mentionedOperation.steps[0]), 'Доставлен в оперблок');
+}
+
+{
+  const oldPatients = [{ id:'legacy', steps:[] }];
+  const oldArchive = [{ id:'shift' }];
+  const migrated = api.normalizeState({ patients:oldPatients, archive:oldArchive });
+  assert.equal(migrated.patients, oldPatients);
+  assert.equal(migrated.archive, oldArchive);
+  for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера']) {
+    assert.ok(migrated.directions.some(item => item.label === label));
+  }
+}
+
+{
+  const custom = api.normalizeState({
+    patients:[], archive:[],
+    directions:[{id:'operation',label:'Операция'},{id:'custom-fgds',label:'ФГДС'}]
+  });
+  assert.ok(custom.directions.some(item => item.id === 'custom-fgds' && item.label === 'ФГДС'));
+  assert.equal(custom.directions.find(item => item.id === 'operation').locked, true);
+}
+
+console.log('MedFlow: 12 сценариев пройдены');
