@@ -77,7 +77,7 @@ function stepTitle(step) {
   return step.title;
 }
 function actionLabel(step) {
-  if (step.type === 'operation' && ['active','waiting'].includes(step.state)) return 'Доставлен в оперблок';
+  if (step.type === 'operation' && ['active','waiting','in_progress'].includes(step.state)) return 'Доставлен в оперблок';
   if (step.state === 'in_or') return 'Позвонили — забирать';
   if (step.state === 'pickup') return 'Забран из оперблока';
   if (step.state === 'in_progress') return 'Завершить';
@@ -148,16 +148,20 @@ function directionsView() {
 
 function historyView() {
   const events = state.patients.flatMap(p => (p.events||[]).map(e=>({...e,patient:p.surname}))).sort((a,b)=>b.at-a.at);
+  const archived = state.archive || [];
   return `
     <div class="section-head"><h2>История смены</h2><span>${events.length} событий</span></div>
     ${events.length ? events.map(e=>`<div class="history-day"><div class="between row"><strong>${esc(e.patient)}</strong><span class="eyebrow">${new Date(e.at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}</span></div><p>${esc(e.text)}</p></div>`).join('') : '<div class="empty">Здесь появятся выполненные этапы, отмены и передачи.</div>'}
-    <div class="section-head"><h2>Данные прототипа</h2></div>
-    <button class="danger-btn" data-action="reset">Сбросить демонстрационные данные</button>
+    <div class="section-head"><h2>Прошлые смены</h2><span>${archived.length}</span></div>
+    ${archived.length ? archived.slice().reverse().map(shift=>`<div class="history-day"><div class="between row"><strong>${new Date(shift.closedAt).toLocaleDateString('ru-RU')}</strong><span class="eyebrow">${shift.patients.length} карточек</span></div><p>Выполнено маршрутов: ${shift.patients.filter(isComplete).length} · событий: ${shift.patients.reduce((n,p)=>n+(p.events?.length||0),0)}</p></div>`).join('') : '<div class="empty">Завершённые смены появятся здесь</div>'}
+    <div class="section-head"><h2>Управление сменой</h2></div>
+    <div class="patient-list"><button class="primary-btn" data-action="new-shift">Начать новую пустую смену</button><button class="danger-btn" data-action="reset">Вернуть демонстрационные данные</button></div>
   `;
 }
 
 function compactPatientCard(p) {
   const step = currentStep(p);
+  const next = nextWaitingStep(p);
   const urgent = step?.urgent || p.priority === 'urgent';
   const orStep = p.steps.find(s => ['in_or','pickup'].includes(s.state));
   const elapsed = orStep?.startedAt ? Date.now() - orStep.startedAt : 0;
@@ -174,11 +178,12 @@ function compactPatientCard(p) {
       <div class="compact-copy">
         <div class="current-label">Сейчас</div>
         <div class="compact-title">${step ? esc(stepTitle(step)) : 'Маршрут завершён'}</div>
+        ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${step.needsClarification?'<span>⚠ уточнить данные</span>':''}</div>` : ''}
         ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>esc(s.title)).join(' → ')}</div>` : ''}
       </div>
       ${orStep ? `<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>` : ''}
     </div>
-    ${step ? `<div class="compact-actions"><button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button><button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>` : `<div class="compact-actions"><button class="secondary-btn" data-action="edit-patient" data-patient="${p.id}">Редактировать</button><button class="secondary-btn compact-details" data-action="details" data-patient="${p.id}">Подробнее</button></div>`}
+    ${step ? `<div class="compact-actions ${canContinueNow(p)?'with-next':''}"><button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}<button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>` : `<div class="compact-actions"><button class="secondary-btn" data-action="edit-patient" data-patient="${p.id}">Редактировать</button><button class="secondary-btn compact-details" data-action="details" data-patient="${p.id}">Подробнее</button></div>`}
   </article>`;
 }
 
@@ -248,7 +253,7 @@ function modalView() {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <h2>Цепочка · ${esc(p?.surname || '')}</h2><p class="modal-sub">Расставь этапы в любом порядке</p>
-      <div class="route-editor">${modal.steps.map((s,i)=>`<div class="route-editor-item"><span class="route-index">${i+1}</span><b>${esc(s.title)}</b><div class="route-tools"><button data-action="route-up" data-index="${i}" ${i===0?'disabled':''}>↑</button><button data-action="route-down" data-index="${i}" ${i===modal.steps.length-1?'disabled':''}>↓</button><button data-action="route-delete" data-index="${i}">×</button></div></div>`).join('')}</div>
+      <div class="route-editor">${modal.steps.map((s,i)=>{const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';return `<div class="route-editor-item ${movable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><b>${esc(s.title)}</b>${movable?'':'<small>Текущий или завершённый этап защищён</small>'}</div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
       <div class="route-add"><select id="route-type"><option value="ct">КТ</option><option value="xray">Рентген</option><option value="ecg">ЭКГ</option><option value="ultrasound">УЗИ</option><option value="operation">Операция</option><option value="icu">Реанимация</option><option value="ward">Палата</option><option value="other">Другое</option></select><input id="route-custom" placeholder="Своё название" /><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
       <div class="modal-actions"><button class="secondary-btn" data-action="details" data-patient="${modal.patient}">Назад</button><button class="primary-btn" data-action="route-save" data-patient="${modal.patient}">Сохранить цепочку</button></div>
     </section></div>`;
@@ -293,10 +298,28 @@ function modalView() {
         <button class="danger-btn" data-action="delete-patient" data-patient="${modal.patient}">Удалить ошибочную карточку</button>
       </div><div class="modal-actions"><button class="secondary-btn" data-action="close">Закрыть</button></div></section></div>`;
   }
+  if (modal.type === 'confirm-delete') {
+    const p = state.patients.find(x => x.id === modal.patient);
+    if (!p) return '';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()">
+      <h2>Удалить карточку?</h2><p class="modal-sub">${esc(p.surname)} исчезнет из текущей смены вместе с историей этапов.</p>
+      <div class="modal-actions"><button class="secondary-btn" data-action="details" data-patient="${p.id}">Не удалять</button><button class="danger-btn" data-action="confirm-delete-patient" data-patient="${p.id}">Удалить</button></div>
+    </section></div>`;
+  }
+  if (modal.type === 'confirm-new-shift') {
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>Начать новую смену?</h2><p class="modal-sub">Текущие карточки уйдут в «Прошлые смены», а главный экран станет пустым.</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="confirm-new-shift">Начать</button></div></section></div>`;
+  }
+  if (modal.type === 'confirm-reset') {
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>Вернуть демо-данные?</h2><p class="modal-sub">Текущая и прошлые смены будут заменены исходным учебным примером.</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="danger-btn" data-action="confirm-reset">Вернуть демо</button></div></section></div>`;
+  }
   if (modal.type === 'destination') {
-    return `<div class="modal-backdrop"><section class="modal"><h2>Куда доставлен пациент?</h2><p class="modal-sub">Таймер остановится после выбора</p><div class="patient-list" style="margin-top:16px">
+    const p = state.patients.find(x => x.id === modal.patient);
+    const next = p ? nextWaitingStep(p) : null;
+    return `<div class="modal-backdrop"><section class="modal"><h2>Куда доставлен пациент?</h2><p class="modal-sub">Таймер остановится после выбора</p>
+      ${next?`<label class="continue-toggle"><input id="continue-after-operation" type="checkbox" /><span><b>Сразу перейти дальше</b><small>Следующий этап: ${esc(next.title)}</small></span></label>`:''}
+      <div class="patient-list" style="margin-top:16px">
       ${['Вернулся в свою палату','Переведён в реанимацию','Переведён в другое отделение','Передан другому сотруднику','Другое место'].map(x=>`<button class="secondary-btn" data-action="finish-operation" data-patient="${modal.patient}" data-destination="${x}">${x}</button>`).join('')}
-    </div></section></div>`;
+      <button class="secondary-btn" data-action="close">Назад, пока не выбирать</button></div></section></div>`;
   }
   return '';
 }
@@ -307,7 +330,17 @@ function bind() {
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
 }
 function log(p,text) { p.events ||= []; p.events.push({at:Date.now(),text}); }
-function activateNext(p) { const next=p.steps.find(s=>s.state==='waiting'); if(next) next.state='active'; }
+function nextWaitingStep(p) { return p.steps.find(s=>s.state==='waiting'); }
+function activateNext(p) { const next=nextWaitingStep(p); if(next) next.state='active'; return next; }
+function canContinueNow(p) { const step=currentStep(p); return step?.state==='in_progress' && step.type!=='operation' && Boolean(nextWaitingStep(p)); }
+function completeCurrentStep(p, startNext=false) {
+  const step=currentStep(p);
+  if(!step) return {step:null,next:null};
+  step.state='done'; step.finishedAt=Date.now();
+  const next=activateNext(p);
+  if(startNext && next) { next.state='in_progress'; next.startedAt ||= Date.now(); }
+  return {step,next};
+}
 
 function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
@@ -331,10 +364,10 @@ function handleAction(action, el, e) {
   }
   if (action==='route-up' || action==='route-down') {
     const i=Number(el.dataset.index), j=action==='route-up'?i-1:i+1;
-    if(j>=0 && j<modal.steps.length) [modal.steps[i],modal.steps[j]]=[modal.steps[j],modal.steps[i]];
+    if(j>=0 && j<modal.steps.length && modal.steps[i].state==='waiting' && modal.steps[j].state==='waiting') [modal.steps[i],modal.steps[j]]=[modal.steps[j],modal.steps[i]];
     return render();
   }
-  if (action==='route-delete') { modal.steps.splice(Number(el.dataset.index),1); return render(); }
+  if (action==='route-delete') { const i=Number(el.dataset.index); if(modal.steps[i]?.state==='waiting') modal.steps.splice(i,1); return render(); }
   if (action==='route-add') {
     const type=document.getElementById('route-type').value;
     const custom=document.getElementById('route-custom').value.trim();
@@ -360,15 +393,27 @@ function handleAction(action, el, e) {
   if (action==='advance') {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
     p.pinned=false;
-    if (s.type==='operation' && ['active','waiting'].includes(s.state)) { s.state='in_or'; s.startedAt=Date.now(); log(p,'Доставлен в оперблок, таймер запущен'); }
+    if (s.type==='operation' && ['active','waiting','in_progress'].includes(s.state)) { s.state='in_or'; s.startedAt=Date.now(); log(p,'Доставлен в оперблок, таймер запущен'); }
     else if (s.state==='in_or') { s.state='pickup'; log(p,'Поступил вызов: пациента нужно забрать'); }
     else if (s.state==='pickup') { modal={type:'destination',patient:p.id}; return render(); }
-    else if (s.state==='in_progress') { s.state='done'; log(p,`Выполнено: ${s.title}`); activateNext(p); }
+    else if (s.state==='in_progress') { const finished=completeCurrentStep(p); log(p,`Выполнено: ${finished.step.title}`); }
     else { s.state='in_progress'; log(p,`Начато: ${s.title}`); }
     save(); return render();
   }
+  if (action==='advance-next') {
+    const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p);
+    if(!p || !s || s.state!=='in_progress' || !nextWaitingStep(p)) return;
+    p.pinned=false;
+    const moved=completeCurrentStep(p,true);
+    log(p,`Выполнено: ${moved.step.title} → начато: ${moved.next.title}`);
+    save(); return render();
+  }
   if (action==='finish-operation') {
-    const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); s.state='done'; s.finishedAt=Date.now(); log(p,`Забран из оперблока: ${el.dataset.destination}`); activateNext(p); modal=null; save(); return render();
+    const p=state.patients.find(p=>p.id===el.dataset.patient);
+    const continueNow=Boolean(document.getElementById('continue-after-operation')?.checked);
+    const finished=completeCurrentStep(p,continueNow);
+    log(p,`Забран из оперблока: ${el.dataset.destination}${continueNow&&finished.next?` → начато: ${finished.next.title}`:''}`);
+    modal=null; save(); return render();
   }
   if (action==='submit-quick') {
     const form=document.getElementById('quick-form'); if(!form.reportValidity()) return;
@@ -392,9 +437,18 @@ function handleAction(action, el, e) {
     const text=action==='cancel-step'?`Отменено: ${s.title}`:action==='postpone-step'?`Перенесено: ${s.title}`:`Передано другому сотруднику: ${s.title}`;
     s.state=action==='postpone-step'?'cancelled':'done'; log(p,text); activateNext(p); modal=null; save(); return render();
   }
-  if (action==='delete-patient') { state.patients=state.patients.filter(p=>p.id!==el.dataset.patient); modal=null; save(); return render(); }
-  if (action==='reset') { localStorage.removeItem(STORAGE_KEY); state=clone(seed); save(); return render(); }
+  if (action==='delete-patient') { modal={type:'confirm-delete',patient:el.dataset.patient}; return render(); }
+  if (action==='confirm-delete-patient') { state.patients=state.patients.filter(p=>p.id!==el.dataset.patient); modal=null; save(); return render(); }
+  if (action==='new-shift') { modal={type:'confirm-new-shift'}; return render(); }
+  if (action==='confirm-new-shift') {
+    state.archive ||= [];
+    if(state.patients.length) state.archive.push({id:uid(),closedAt:Date.now(),patients:clone(state.patients)});
+    state.patients=[]; modal=null; view='today'; save(); return render();
+  }
+  if (action==='reset') { modal={type:'confirm-reset'}; return render(); }
+  if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=clone(seed); modal=null; view='today'; save(); return render(); }
 }
 
+globalThis.__MEDFLOW_TEST__={currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,esc};
 setInterval(()=>{ if(document.querySelector('.timer')) render(); },30000);
 render();

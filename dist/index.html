@@ -6,10 +6,14 @@
   <meta name="theme-color" content="#070a0e" />
   <title>MedFlow — прототип</title>
   <meta name="description" content="Личный помощник для координации маршрутов пациентов" />
-  <link rel="stylesheet" href="styles.css?v=9" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="stylesheet" href="styles.css?v=10" />
 </head>
 <body>
   <div id="app"></div>
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=10"></script>
+  <script>
+    if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+  </script>
 </body>
 </html>
