@@ -126,7 +126,10 @@ function todayView(active, completed, ops, inOr) {
     <div class="patient-list">${engagedPatients.length ? engagedPatients.map(compactPatientCard).join('') : '<div class="empty">Сейчас все пациенты в палатах</div>'}</div>
     <div class="section-head"><h2>Очередь</h2><span>автосортировка включена</span></div>
     <div class="patient-list">${queuedPatients.length ? queuedPatients.map(compactPatientCard).join('') : '<div class="empty">Новых поручений пока нет</div>'}</div>
-    <button class="completed-toggle" data-action="toggle-completed"><span>Выполнено сегодня</span><strong>${completed.length} ${showCompleted?'⌃':'⌄'}</strong></button>
+    <button class="completed-toggle" data-action="toggle-completed" aria-expanded="${showCompleted}">
+      <span>Выполнено сегодня</span>
+      <strong><span>${completed.length}</span><i class="toggle-chevron ${showCompleted ? 'open' : ''}" aria-hidden="true"></i></strong>
+    </button>
     ${showCompleted ? `<div class="patient-list" style="margin-top:10px">${completed.map(compactPatientCard).join('') || '<div class="empty">Пока ничего</div>'}</div>` : ''}
   `;
 }

@@ -110,6 +110,9 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .chip.active { color:#dce4e4; background:rgba(255,255,255,.026); border-color:rgba(210,226,226,.22); box-shadow:0 0 12px rgba(235,242,242,.025); }
 .empty { border:1px dashed rgba(255,255,255,.15); border-radius:18px; padding:24px; text-align:center; color:var(--muted); font-size:13px; }
 .completed-toggle { width:100%; background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px 15px; color:var(--text); display:flex; justify-content:space-between; cursor:pointer; margin-top:14px; }
+.completed-toggle strong { display:flex; align-items:center; gap:10px; }
+.toggle-chevron { width:8px; height:8px; border-right:1.5px solid var(--muted); border-bottom:1.5px solid var(--muted); transform:rotate(45deg); transition:transform .18s ease, margin .18s ease; margin-top:-4px; }
+.toggle-chevron.open { transform:rotate(225deg); margin-top:4px; }
 .nav { position:fixed; z-index:20; left:50%; bottom:max(12px,env(safe-area-inset-bottom)); transform:translateX(-50%); width:min(calc(100% - 24px),696px); display:grid; grid-template-columns:repeat(3,1fr); gap:5px; padding:7px; border-radius:18px; background:rgba(10,13,17,.93); backdrop-filter:blur(22px); border:1px solid rgba(222,232,235,.10); box-shadow:var(--shadow); }
 .nav-btn { background:transparent; color:var(--muted); min-height:52px; border-radius:14px; font-size:11px; font-weight:800; }
 .nav-btn b { display:block; font-size:18px; margin-bottom:2px; }
