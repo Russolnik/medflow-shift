@@ -81,6 +81,7 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .badge.angio { background:transparent; border:1px solid rgba(130,176,164,.36); color:#9fc0b7; }
 .badge.neutral { background:transparent; border:1px solid rgba(222,232,235,.12); color:#b8c0c3; }
 .badge.warn { background:transparent; border:1px solid rgba(190,169,111,.34); color:#cbbd92; }
+.badge.operation { background:transparent; border:1px solid rgba(190,169,111,.28); color:#c9bd9a; }
 .route { display:flex; align-items:center; gap:5px; overflow-x:auto; padding:7px 15px 13px; scrollbar-width:none; }
 .route::-webkit-scrollbar { display:none; }
 .step { flex:0 0 auto; display:flex; align-items:center; gap:5px; color:var(--muted); font-size:11px; }
@@ -108,6 +109,9 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .filters::-webkit-scrollbar { display:none; }
 .chip { flex:0 0 auto; background:var(--surface); border:1px solid var(--line); color:var(--muted); padding:9px 12px; border-radius:999px; font-size:12px; font-weight:700; }
 .chip.active { color:#dce4e4; background:rgba(255,255,255,.026); border-color:rgba(210,226,226,.22); box-shadow:0 0 12px rgba(235,242,242,.025); }
+.directions-head > div { min-width:0; }
+.directions-head > div span { display:block; margin-top:3px; }
+.manage-directions-btn { flex:0 0 auto; min-height:36px; padding:0 12px; }
 .empty { border:1px dashed rgba(255,255,255,.15); border-radius:18px; padding:24px; text-align:center; color:var(--muted); font-size:13px; }
 .completed-toggle { width:100%; background:var(--surface); border:1px solid var(--line); border-radius:16px; padding:14px 15px; color:var(--text); display:flex; justify-content:space-between; cursor:pointer; margin-top:14px; }
 .completed-toggle strong { display:flex; align-items:center; gap:10px; }
@@ -164,6 +168,8 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .route-item-copy { min-width:0; flex:1; }
 .route-item-copy b,.route-item-copy small { display:block; }
 .route-item-copy small { color:var(--muted); font-size:9px; margin-top:3px; }
+.route-title-input { width:100%; min-height:34px; padding:6px 8px; border-radius:9px; color:var(--text); background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08); outline:none; font-size:13px; font-weight:750; }
+.route-title-input:focus { border-color:rgba(202,220,224,.40); }
 .route-editor-item.locked { background:rgba(255,255,255,.012); }
 .route-index { width:27px; height:27px; display:grid; place-items:center; border-radius:9px; color:#e6ecec; background:rgba(255,255,255,.025); border:1px solid rgba(207,224,224,.26); font-size:11px; font-weight:900; }
 .route-tools { display:flex; gap:4px; }
@@ -171,6 +177,18 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .route-tools button:disabled { opacity:.25; }
 .route-add { display:grid; grid-template-columns:1fr 1fr auto; gap:8px; margin-top:14px; }
 .route-add select,.route-add input { min-width:0; min-height:42px; border-radius:11px; padding:8px 10px; color:var(--text); background:#030a10; border:1px solid rgba(122,173,183,.17); }
+.direction-checks { display:flex; flex-wrap:wrap; gap:8px; margin-top:3px; }
+.direction-checks label { display:flex; align-items:center; gap:6px; min-height:34px; padding:7px 9px; border:1px solid rgba(255,255,255,.08); border-radius:10px; color:var(--text); background:rgba(255,255,255,.012); cursor:pointer; }
+.direction-checks input { accent-color:var(--accent); }
+.direction-catalog { display:grid; gap:8px; margin-top:17px; }
+.direction-catalog-item { display:grid; grid-template-columns:minmax(0,1fr) 38px; gap:8px; }
+.direction-catalog-item input,.direction-new input { width:100%; min-height:42px; padding:8px 11px; border-radius:11px; color:var(--text); background:#030a10; border:1px solid rgba(122,173,183,.17); outline:none; }
+.direction-catalog-item input:focus,.direction-new input:focus { border-color:rgba(202,220,224,.46); }
+.direction-remove { border:1px solid rgba(215,125,137,.24); border-radius:11px; background:transparent; color:#d899a1; cursor:pointer; }
+.direction-remove:disabled { opacity:.28; cursor:not-allowed; }
+.direction-new { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin-top:13px; }
+.direction-new .secondary-btn { min-height:42px; }
+.form-error { color:#d899a1; font-size:11px; margin-top:9px; }
 .history-day { background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:15px; margin-bottom:10px; }
 .history-day strong { font-size:14px; }
 .history-day p { color:var(--muted); font-size:12px; margin-top:5px; }
