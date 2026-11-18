@@ -1,5 +1,5 @@
-const CACHE = 'medflow-shell-v20';
-const SHELL = ['./index.html', './styles.css', './app.js'];
+const CACHE = 'medflow-shell-v21';
+const SHELL = ['./index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
