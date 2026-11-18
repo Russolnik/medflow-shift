@@ -134,6 +134,7 @@ function directionOptions(selected='', includeSystem=false) {
 }
 function isStoppedStep(step) { return ['cancelled','postponed'].includes(step?.state); }
 function isTerminalStep(step) { return step?.state === 'done' || isStoppedStep(step); }
+function isHistoryStep(step) { return isTerminalStep(step); }
 function currentStep(patient) { return patient.steps.find(step => !isTerminalStep(step)); }
 function isComplete(patient) { return patient.steps.every(isTerminalStep); }
 function isOperationStep(step) {
@@ -410,7 +411,7 @@ function directionsView() {
   `;
 }
 
-function historyStepView(step) {
+function historyStepView(step, patient={id:'',steps:[]}, source='current') {
   const facts = stepHistoryFacts(step);
   const stopped = isStoppedStep(step);
   const status = step.state === 'done' ? 'Готово' : step.state === 'cancelled' ? 'Отменено' : step.state === 'postponed' ? 'Перенесено' : ['in_progress','in_or','pickup'].includes(step.state) ? 'В работе' : 'Ожидает';
@@ -437,19 +438,23 @@ function historyStepView(step) {
     <div class="history-step-head"><b>${esc(facts.title)}</b><span>${status}</span></div>
     <p>${timeline.map(esc).join(' · ')}</p>
     <small>Перед выходом: ${esc(facts.startDocuments)} · при завершении: ${esc(facts.finishDocuments)}</small>
+    <button class="history-restore-btn" data-action="restore-step" data-patient="${esc(patient.id)}" data-step="${esc(step.id)}" data-source="${esc(source)}">${currentStep(patient)?'Добавить повторно':'Вернуть в очередь'}</button>
   </div>`;
 }
 
-function historyPatientCard(patient) {
+function historyPatientCard(patient, source='current') {
+  const steps = patient.steps.filter(isHistoryStep);
+  if (!steps.length) return '';
   return `<article class="history-patient">
     <div class="history-patient-head"><b>${esc(patient.surname || 'Без фамилии')} <span>· п.${esc(patient.room || '?')}</span></b><small>${esc(patient.transport || 'способ не указан')}</small></div>
-    <div class="history-steps">${patient.steps.map(historyStepView).join('') || '<div class="empty compact-empty">Нет этапов</div>'}</div>
+    <div class="history-steps">${steps.map(step=>historyStepView(step,patient,source)).join('')}</div>
   </article>`;
 }
 
 function shiftCardView(shift, current=false) {
-  const patients = Array.isArray(shift.patients) ? shift.patients : [];
-  const progress = shiftProgress(patients);
+  const patients = (Array.isArray(shift.patients) ? shift.patients : []).filter(patient=>patient.steps.some(isHistoryStep));
+  const progress = shiftProgress(patients.map(patient=>({...patient,steps:patient.steps.filter(isHistoryStep)})));
+  const source = current ? 'current' : shift.id;
   const datedAt = validTimestamp(shift.closedAt) || validTimestamp(shift.startedAt);
   const label = current ? 'Текущая смена' : datedAt ? new Date(datedAt).toLocaleDateString('ru-RU') : 'Дата не записана';
   const period = current
@@ -457,7 +462,7 @@ function shiftCardView(shift, current=false) {
     : shift.startedAt && shift.closedAt ? `${fmtClock(shift.startedAt)}–${fmtClock(shift.closedAt)}` : shift.startedAt ? `с ${fmtClock(shift.startedAt)}` : shift.closedAt ? `до ${fmtClock(shift.closedAt)}` : 'время не записано';
   return `<details class="shift-card ${current?'current':''}">
     <summary><div><b>${label}</b><span>${patients.length} пациентов · ${progress.tasks.handled}/${progress.tasks.total} задач обработано</span></div><div class="shift-period"><small>${period}</small><i class="toggle-chevron" aria-hidden="true"></i></div></summary>
-    <div class="shift-details">${patients.map(historyPatientCard).join('') || '<div class="empty compact-empty">В этой смене пока нет пациентов</div>'}</div>
+    <div class="shift-details">${patients.map(patient=>historyPatientCard(patient,source)).join('') || '<div class="empty compact-empty">Пока нет завершённых, отменённых или перенесённых этапов</div>'}</div>
   </details>`;
 }
 
@@ -501,6 +506,7 @@ function settingsView() {
 
 function compactPatientCard(p) {
   const step = currentStep(p);
+  const lastTerminal = [...p.steps].reverse().find(isTerminalStep);
   const next = nextWaitingStep(p);
   const urgent = step?.urgent || p.priority === 'urgent';
   const orStep = p.steps.find(s => ['in_or','pickup'].includes(s.state));
@@ -524,7 +530,7 @@ function compactPatientCard(p) {
       </div>
       <div class="compact-controls">
         ${orStep ? `<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>` : ''}
-        ${step ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : ''}
+        ${step ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : lastTerminal ? `<button class="secondary-btn restore-btn" data-action="restore-step" data-patient="${p.id}" data-step="${lastTerminal.id}" data-source="current">Вернуть в очередь</button>` : ''}
         <div class="compact-tools"><button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>
       </div>
     </div>
@@ -739,6 +745,38 @@ function stopCurrentStep(p, action, at=Date.now()) {
   return step;
 }
 
+function resetStepTracking(step) {
+  ['startedAt','arrivedAt','readyAt','pickedUpAt','finishedAt','destination','documents'].forEach(key=>delete step[key]);
+  step.urgent=false;
+  return step;
+}
+function restoreOrRepeatStep(patient, stepId) {
+  const original=patient?.steps?.find(step=>step.id===stepId && isTerminalStep(step));
+  if(!original) return {mode:null,step:null};
+  const hasOpen=Boolean(currentStep(patient));
+  let step;
+  if(hasOpen) {
+    step=resetStepTracking({...clone(original),id:uid(),state:'waiting'});
+    patient.steps.push(step);
+  } else {
+    step=resetStepTracking(original);
+    step.state='active';
+  }
+  patient.pinned=false;
+  syncPatientPriority(patient,false);
+  return {mode:hasOpen?'repeat':'restore',step};
+}
+function restoreArchivedStep(shiftId, patientId, stepId) {
+  const shift=(state.archive||[]).find(item=>item.id===shiftId);
+  const sourcePatient=shift?.patients?.find(patient=>patient.id===patientId);
+  const sourceStep=sourcePatient?.steps?.find(step=>step.id===stepId && isTerminalStep(step));
+  if(!sourcePatient || !sourceStep) return null;
+  const patient={...clone(sourcePatient),id:uid(),steps:[resetStepTracking({...clone(sourceStep),id:uid(),state:'active'})],events:[],pinned:false};
+  syncPatientPriority(patient,false);
+  state.patients.push(patient);
+  return patient;
+}
+
 function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
   if (action==='close') { modal=null; return render(); }
@@ -784,6 +822,19 @@ function handleAction(action, el, e) {
   }
   if (action==='details') { modal={type:'details',patient:el.dataset.patient}; return render(); }
   if (action==='edit-patient') { modal={type:'edit-patient',patient:el.dataset.patient}; return render(); }
+  if (action==='restore-step') {
+    if(el.dataset.source && el.dataset.source!=='current') {
+      const patient=restoreArchivedStep(el.dataset.source,el.dataset.patient,el.dataset.step);
+      if(!patient) return;
+      log(patient,`Возвращено из прошлой смены: ${patient.steps[0].title}`);
+    } else {
+      const patient=state.patients.find(item=>item.id===el.dataset.patient);
+      const result=restoreOrRepeatStep(patient,el.dataset.step);
+      if(!result.step) return;
+      log(patient,result.mode==='repeat'?`Повторно добавлено: ${result.step.title}`:`Возвращено в очередь: ${result.step.title}`);
+    }
+    view='today'; modal=null; save(); return render();
+  }
   if (action==='save-patient') {
     const form=document.getElementById('edit-patient-form'); if(!form.reportValidity()) return;
     const fd=new FormData(form), p=state.patients.find(p=>p.id===el.dataset.patient), step=currentStep(p);
@@ -926,11 +977,12 @@ function handleAction(action, el, e) {
 }
 
 globalThis.__MEDFLOW_TEST__={
-  isStoppedStep,isTerminalStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,stopCurrentStep,
+  isStoppedStep,isTerminalStep,isHistoryStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,stopCurrentStep,
   actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,normalizeStep,typeLabel,
   syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
-  captureViewPosition,restoreViewPosition,historyStepView,shiftCardView,inferShiftStart,historyView,settingsView,topbarView
+  captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
+  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 render();
