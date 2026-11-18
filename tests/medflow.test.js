@@ -369,6 +369,55 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
+  const patient = {id:'history-filter',surname:'FILTER',room:'1',transport:'walk',steps:[
+    step('DONE-ONLY','done','ct'),
+    step('ACTIVE-HIDDEN','active','ecg'),
+    step('WAITING-HIDDEN','waiting','xray')
+  ]};
+  const html = api.historyPatientCard(patient);
+  assert.ok(html.includes('DONE-ONLY'));
+  assert.ok(!html.includes('ACTIVE-HIDDEN'));
+  assert.ok(!html.includes('WAITING-HIDDEN'));
+  assert.equal(api.isHistoryStep(patient.steps[0]), true);
+  assert.equal(api.isHistoryStep(patient.steps[1]), false);
+}
+
+{
+  const patient = {id:'restore-one',priority:'normal',block:'',pinned:true,steps:[{
+    ...step('RETURN-ME','done','ct'),startedAt:100,finishedAt:200,documents:{start:'taken'}
+  }]};
+  const result = api.restoreOrRepeatStep(patient,'RETURN-ME');
+  assert.equal(result.mode,'restore');
+  assert.equal(patient.steps[0].state,'active');
+  assert.equal(patient.steps[0].startedAt,undefined);
+  assert.equal(patient.steps[0].finishedAt,undefined);
+  assert.equal(patient.steps[0].documents,undefined);
+  assert.equal(patient.pinned,false);
+}
+
+{
+  const patient = {id:'repeat-one',priority:'normal',block:'',pinned:false,steps:[
+    step('OLD-DONE','done','ct'),step('CURRENT','active','ecg')
+  ]};
+  const result = api.restoreOrRepeatStep(patient,'OLD-DONE');
+  assert.equal(result.mode,'repeat');
+  assert.equal(patient.steps.length,3);
+  assert.equal(patient.steps[0].state,'done');
+  assert.equal(api.currentStep(patient).title,'CURRENT');
+  assert.equal(patient.steps[2].title,'OLD-DONE');
+  assert.equal(patient.steps[2].state,'waiting');
+  assert.notEqual(patient.steps[2].id,'OLD-DONE');
+}
+
+{
+  const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
+  assert.ok(sw.includes("medflow-shell-v19"));
+  assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
+  assert.ok(sw.includes('ignoreSearch: true'));
+  assert.ok(sw.includes("caches.match('./index.html')"));
+}
+
+{
   assert.ok(appRoot.innerHTML.includes('class="shift-progress"'));
   assert.ok(appRoot.innerHTML.includes('progress-segment done'));
   assert.ok(appRoot.innerHTML.includes('progress-segment running'));
