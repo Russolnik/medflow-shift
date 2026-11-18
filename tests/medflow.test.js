@@ -26,9 +26,13 @@ const sandbox = {
     querySelector: () => null
   },
   setInterval: () => 0,
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+  navigator: { onLine: true },
   FormData: class {}
 };
 sandbox.globalThis = sandbox;
+sandbox.window = { addEventListener: () => {} };
 vm.runInNewContext(source, sandbox, { filename: 'app.js' });
 
 const api = sandbox.__MEDFLOW_TEST__;
@@ -411,12 +415,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v21"));
+  assert.ok(sw.includes("medflow-shell-v22"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=21');
+  assert.equal(manifest.start_url,'./?pwa=22');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -433,6 +437,14 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 4);
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
+}
+
+{
+  assert.ok(source.includes('sb_publishable_'));
+  assert.ok(!source.includes('sb_secret_'));
+  assert.ok(!source.includes('service_role'));
+  assert.ok(source.includes('/auth/v1/token?grant_type=password'));
+  assert.ok(source.includes('/rest/v1/medflow_states?on_conflict=user_id'));
 }
 
 console.log('MedFlow: все сценарии пройдены');

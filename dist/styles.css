@@ -270,6 +270,16 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .settings-card-head h2 { font-size:14px; }
 .settings-card-head span { color:var(--muted); font-size:10px; text-align:right; }
 .settings-card > p { color:var(--muted); font-size:10px; line-height:1.45; margin:7px 0 11px; }
+.cloud-card { border-color:rgba(151,177,181,.24); }
+.cloud-card .primary-btn { width:100%; }
+.cloud-status.synced { color:#9ec9ae; }
+.cloud-status.syncing,.cloud-status.pending { color:#d4bd7f; }
+.cloud-status.error { color:#d899a1; }
+.cloud-message { color:#bfcaca!important; border-left:2px solid rgba(185,205,207,.3); padding-left:8px; }
+.auth-modal .form-grid { grid-template-columns:1fr; }
+.auth-note { color:var(--muted); font-size:10px; line-height:1.45; margin-top:10px; }
+.auth-modal .modal-actions { flex-wrap:wrap; }
+.auth-modal .modal-actions button { min-width:90px; }
 .settings-actions { display:grid; gap:8px; margin-top:12px; }
 .position-options { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .position-option { min-height:63px; padding:10px; text-align:left; color:var(--text); border:1px solid rgba(222,232,235,.09); border-radius:12px; background:rgba(255,255,255,.012); cursor:pointer; }

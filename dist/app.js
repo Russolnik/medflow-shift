@@ -1,4 +1,8 @@
 const STORAGE_KEY = 'medflow-prototype-v1';
+const AUTH_STORAGE_KEY = 'medflow-supabase-session-v1';
+const SYNC_META_KEY = 'medflow-sync-meta-v1';
+const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
 
 const DEFAULT_DIRECTIONS = [
   { id: 'operation', label: 'Операция', locked: true },
@@ -67,12 +71,145 @@ let view = 'today';
 let direction = 'all';
 let modal = null;
 let showCompleted = false;
+let localUpdatedAt = Number(localStorage.getItem(SYNC_META_KEY)) || 0;
+let syncTimer = null;
+let cloud = {
+  session: loadCloudSession(),
+  status: navigator.onLine ? 'local' : 'offline',
+  message: '',
+  syncing: false,
+  lastSyncedAt: 0
+};
 
 function load() {
   try { return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)) || clone(seed)); }
   catch { return normalizeState(clone(seed)); }
 }
-function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localUpdatedAt = Date.now();
+  localStorage.setItem(SYNC_META_KEY, String(localUpdatedAt));
+  scheduleCloudSync();
+}
+function loadCloudSession() {
+  try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || null; }
+  catch { return null; }
+}
+function storeCloudSession(session) {
+  cloud.session = session || null;
+  if (session) localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+  else localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+function sessionEmail() { return cloud.session?.user?.email || ''; }
+function cloudHeaders(auth=true) {
+  const headers = { apikey: SUPABASE_PUBLISHABLE_KEY, 'Content-Type': 'application/json' };
+  if (auth && cloud.session?.access_token) headers.Authorization = `Bearer ${cloud.session.access_token}`;
+  return headers;
+}
+async function cloudRequest(path, options={}, auth=true) {
+  const response = await fetch(`${SUPABASE_URL}${path}`, { ...options, headers: { ...cloudHeaders(auth), ...(options.headers || {}) } });
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!response.ok) throw new Error(body?.msg || body?.message || body?.error_description || body?.error || `Ошибка ${response.status}`);
+  return body;
+}
+async function refreshCloudSession() {
+  const token = cloud.session?.refresh_token;
+  if (!token || !navigator.onLine) return false;
+  try {
+    const session = await cloudRequest('/auth/v1/token?grant_type=refresh_token', { method:'POST', body:JSON.stringify({refresh_token:token}) }, false);
+    storeCloudSession(session);
+    return true;
+  } catch {
+    storeCloudSession(null);
+    cloud.status = 'local';
+    cloud.message = 'Нужно войти снова';
+    return false;
+  }
+}
+async function ensureCloudSession() {
+  if (!cloud.session?.access_token) return false;
+  const expiresAt = Number(cloud.session.expires_at || 0) * 1000;
+  if (expiresAt && expiresAt < Date.now() + 60000) return refreshCloudSession();
+  return true;
+}
+async function pushCloudState() {
+  if (!cloud.session?.user?.id || !navigator.onLine) return false;
+  const ready = await ensureCloudSession();
+  if (!ready) return false;
+  const at = localUpdatedAt || Date.now();
+  await cloudRequest('/rest/v1/medflow_states?on_conflict=user_id', {
+    method:'POST',
+    headers:{ Prefer:'resolution=merge-duplicates,return=minimal' },
+    body:JSON.stringify({ user_id:cloud.session.user.id, payload:state, client_updated_at:new Date(at).toISOString() })
+  });
+  cloud.lastSyncedAt = Date.now();
+  cloud.status = 'synced';
+  cloud.message = '';
+  return true;
+}
+async function syncCloudState({preferRemote=false}={}) {
+  if (cloud.syncing || !cloud.session?.user?.id) return;
+  if (!navigator.onLine) { cloud.status='offline'; cloud.message='Изменения сохранены на устройстве'; return; }
+  cloud.syncing = true;
+  cloud.status = 'syncing';
+  try {
+    const ready = await ensureCloudSession();
+    if (!ready) return;
+    const rows = await cloudRequest(`/rest/v1/medflow_states?select=payload,client_updated_at,updated_at&user_id=eq.${encodeURIComponent(cloud.session.user.id)}&limit=1`);
+    const remote = rows?.[0];
+    const remoteAt = remote ? new Date(remote.client_updated_at || remote.updated_at).getTime() : 0;
+    if (remote && (preferRemote || !localUpdatedAt || remoteAt > localUpdatedAt)) {
+      state = normalizeState(remote.payload);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localUpdatedAt = remoteAt || Date.now();
+      localStorage.setItem(SYNC_META_KEY, String(localUpdatedAt));
+      cloud.lastSyncedAt = Date.now();
+      cloud.status = 'synced';
+      cloud.message = 'Данные загружены из облака';
+      render(true);
+    } else {
+      await pushCloudState();
+    }
+  } catch (error) {
+    cloud.status = 'error';
+    cloud.message = error.message || 'Не удалось синхронизировать';
+  } finally {
+    cloud.syncing = false;
+    if (view === 'settings') render(true);
+  }
+}
+function scheduleCloudSync() {
+  if (!cloud.session?.user?.id) return;
+  clearTimeout(syncTimer);
+  cloud.status = navigator.onLine ? 'pending' : 'offline';
+  syncTimer = setTimeout(()=>syncCloudState(), 900);
+}
+async function signInCloud(email,password) {
+  const session = await cloudRequest('/auth/v1/token?grant_type=password', { method:'POST', body:JSON.stringify({email,password}) }, false);
+  storeCloudSession(session);
+  cloud.message = 'Вход выполнен';
+  await syncCloudState();
+}
+async function signUpCloud(email,password) {
+  const result = await cloudRequest('/auth/v1/signup', { method:'POST', body:JSON.stringify({email,password}) }, false);
+  if (result?.access_token) {
+    storeCloudSession(result);
+    cloud.message = 'Аккаунт создан';
+    await syncCloudState();
+  } else {
+    cloud.message = 'Проверь почту и подтверди регистрацию, затем войди';
+  }
+}
+async function signOutCloud() {
+  try {
+    if (cloud.session?.access_token && navigator.onLine) await cloudRequest('/auth/v1/logout', {method:'POST'});
+  } catch {}
+  storeCloudSession(null);
+  cloud.status = navigator.onLine ? 'local' : 'offline';
+  cloud.message = 'Облачная сессия завершена. Локальные данные сохранены';
+}
 function esc(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function validTimestamp(value) { return Number.isFinite(value) && value > 0 ? value : null; }
 function normalizeDocumentRecord(value) {
@@ -476,9 +613,29 @@ function historyView() {
   `;
 }
 
+function cloudStatusLabel() {
+  if (!cloud.session) return navigator.onLine ? 'Только на этом устройстве' : 'Офлайн · только на устройстве';
+  return ({ synced:'Синхронизировано', syncing:'Синхронизация…', pending:'Есть несохранённые изменения', offline:'Офлайн · синхронизируем позже', error:'Ошибка синхронизации' })[cloud.status] || 'Облако подключено';
+}
+function cloudSettingsView() {
+  if (!cloud.session) return `<section class="settings-card cloud-card">
+    <div class="settings-card-head"><h2>Облачное хранение</h2><span>${cloudStatusLabel()}</span></div>
+    <p>Войди, чтобы смены сохранялись в Supabase и открывались на другом устройстве. Без входа MedFlow по-прежнему работает локально и офлайн.</p>
+    ${cloud.message?`<p class="cloud-message">${esc(cloud.message)}</p>`:''}
+    <button class="primary-btn" data-action="cloud-auth">Войти или создать аккаунт</button>
+  </section>`;
+  return `<section class="settings-card cloud-card">
+    <div class="settings-card-head"><h2>Облачное хранение</h2><span class="cloud-status ${esc(cloud.status)}">${cloudStatusLabel()}</span></div>
+    <p><b>${esc(sessionEmail())}</b><br>Локальная копия остаётся на телефоне, а изменения отправляются в защищённое хранилище при появлении сети.</p>
+    ${cloud.message?`<p class="cloud-message">${esc(cloud.message)}</p>`:''}
+    <div class="settings-actions"><button class="primary-btn" data-action="cloud-sync" ${cloud.syncing?'disabled':''}>Синхронизировать сейчас</button><button class="secondary-btn" data-action="cloud-logout">Выйти</button></div>
+  </section>`;
+}
+
 function settingsView() {
   const buttonPosition = addButtonPosition();
   return `
+    ${cloudSettingsView()}
     <section class="settings-card">
       <div class="settings-card-head"><h2>Быстрая запись</h2><span>положение кнопки «＋»</span></div>
       <p>Выбери, где удобнее держать кнопку добавления на экранах «Сегодня» и «Направления».</p>
@@ -498,7 +655,7 @@ function settingsView() {
         <p><b>Для кого.</b> Первая версия сделана для сотрудника хирургического отделения, который подаёт и забирает пациентов и одновременно держит в голове несколько поручений.</p>
         <p><b>Зачем.</b> Чтобы быстрее видеть следующую задачу, не терять изменения плана и хранить цепочку «ЭКГ → рентген → операция → палата» в одном месте.</p>
         <p><b>Автор идеи.</b> Сотрудник стационара, ежедневно работающий с внутрибольничной транспортировкой пациентов.</p>
-        <p class="about-note">Это личный MVP, а не официальная медицинская система. Он не назначает клинический приоритет и хранит данные только в браузере этого устройства.</p>
+        <p class="about-note">Это личный MVP, а не официальная медицинская система. Он не назначает клинический приоритет. Без входа данные хранятся только на устройстве; после входа — ещё и в личной защищённой записи Supabase.</p>
       </div>
     </details>
   `;
@@ -566,6 +723,18 @@ function documentChoice(name, stage, title) {
 }
 
 function modalView() {
+  if (modal.type === 'cloud-auth') {
+    return `<div class="modal-backdrop" data-action="close"><section class="modal auth-modal" onclick="event.stopPropagation()">
+      <h2>Облачное хранение</h2><p class="modal-sub">Один аккаунт — одинаковые смены на телефоне и компьютере</p>
+      <form id="cloud-auth-form" class="form-grid">
+        <label>Email<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
+        <label>Пароль<input name="password" type="password" autocomplete="current-password" required minlength="8" placeholder="Минимум 8 символов"></label>
+      </form>
+      ${modal.error?`<p class="form-error">${esc(modal.error)}</p>`:''}
+      <p class="auth-note">Пароль передаётся напрямую в Supabase Auth и не хранится внутри данных MedFlow.</p>
+      <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="secondary-btn" data-action="cloud-signup">Регистрация</button><button class="primary-btn" data-action="cloud-signin">Войти</button></div>
+    </section></div>`;
+  }
   if (modal.type === 'documents') {
     const p = state.patients.find(x => x.id === modal.patient);
     const step = p && currentStep(p);
@@ -777,9 +946,26 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
   return patient;
 }
 
-function handleAction(action, el, e) {
+async function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
   if (action==='close') { modal=null; return render(); }
+  if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',error:''}; return render(); }
+  if (action==='cloud-signin' || action==='cloud-signup') {
+    e?.preventDefault();
+    const form=document.getElementById('cloud-auth-form');
+    if(!form?.reportValidity()) return;
+    const fd=new FormData(form), email=String(fd.get('email')||'').trim(), password=String(fd.get('password')||'');
+    modal.error='';
+    try {
+      if(action==='cloud-signin') await signInCloud(email,password); else await signUpCloud(email,password);
+      modal=null; view='settings'; return render();
+    } catch(error) {
+      modal.error=error.message||'Не удалось выполнить вход';
+      return render();
+    }
+  }
+  if (action==='cloud-sync') { cloud.message=''; await syncCloudState(); return render(true); }
+  if (action==='cloud-logout') { await signOutCloud(); return render(true); }
   if (action==='toggle-completed') { showCompleted=!showCompleted; return render(); }
   if (action==='set-add-position') {
     state.settings.addButtonPosition=ADD_BUTTON_POSITIONS.includes(el.dataset.position)?el.dataset.position:'floating';
@@ -985,4 +1171,15 @@ globalThis.__MEDFLOW_TEST__={
   resetStepTracking,restoreOrRepeatStep,restoreArchivedStep
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
+window.addEventListener('online',()=>{
+  cloud.status=cloud.session?'pending':'local';
+  cloud.message=cloud.session?'Сеть появилась, синхронизируем…':'';
+  if(cloud.session) syncCloudState(); else if(view==='settings') render(true);
+});
+window.addEventListener('offline',()=>{
+  cloud.status='offline';
+  cloud.message=cloud.session?'Изменения сохраняются на устройстве':'';
+  if(view==='settings') render(true);
+});
 render();
+if(cloud.session) setTimeout(()=>syncCloudState(),0);
