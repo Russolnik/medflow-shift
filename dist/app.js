@@ -138,11 +138,11 @@ function comparePatients(a, b, mode=state.settings.sortMode) {
 function sortPatients(patients, mode=state.settings.sortMode) {
   return [...patients].sort((a,b) => comparePatients(a,b,mode));
 }
-function sortControl() {
-  return `<div class="sort-control"><label for="sort-mode">Сортировка</label><select id="sort-mode" data-sort-mode>
-    <option value="priority" ${state.settings.sortMode==='priority'?'selected':''}>По приоритету</option>
-    <option value="time-asc" ${state.settings.sortMode==='time-asc'?'selected':''}>По времени: сначала ранние</option>
-    <option value="time-desc" ${state.settings.sortMode==='time-desc'?'selected':''}>По времени: сначала поздние</option>
+function sortControl(compact=false) {
+  return `<div class="sort-control ${compact?'compact-sort':''}">${compact?'':'<label for="sort-mode">Сортировка</label>'}<select id="sort-mode" data-sort-mode aria-label="Сортировка очереди">
+    <option value="priority" ${state.settings.sortMode==='priority'?'selected':''}>${compact?'Приоритет':'По приоритету'}</option>
+    <option value="time-asc" ${state.settings.sortMode==='time-asc'?'selected':''}>${compact?'Время ↑':'По времени: сначала ранние'}</option>
+    <option value="time-desc" ${state.settings.sortMode==='time-desc'?'selected':''}>${compact?'Время ↓':'По времени: сначала поздние'}</option>
   </select></div>`;
 }
 function blockLabel(block) { return ({gxo:'ГХО',xo:'ХО',angio:'АНГИО'})[block] || ''; }
@@ -159,6 +159,18 @@ function fmtDuration(ms) {
   return h ? `${h} ч ${m} мин` : `${m} мин`;
 }
 function timerClass(ms) { const m = ms/60000; return m < 60 ? 'green' : m < 120 ? 'yellow' : 'red'; }
+function shiftProgress(patients) {
+  return patients.reduce((progress, patient) => {
+    patient.steps.forEach(step => {
+      if (step.state === 'cancelled') return;
+      const operation = isOperationStep(step);
+      progress.total += operation ? 2 : 1;
+      if (step.state === 'done') progress.done += operation ? 2 : 1;
+      else if (operation && ['in_or','pickup'].includes(step.state)) progress.done += 1;
+    });
+    return progress;
+  }, { done:0, total:0 });
+}
 function stepTitle(step) {
   if (step.state === 'in_or') return 'В оперблоке — ожидается вызов';
   if (step.state === 'pickup') return 'Позвонили — нужно забрать';
@@ -186,7 +198,7 @@ function render() {
         <div class="brand"><div class="logo">M</div><div><h1>MedFlow</h1><div class="eyebrow">Личная смена · демо-данные</div></div></div>
         <button class="icon-btn" data-action="add">＋ Записать</button>
       </header>
-      ${view !== 'history' ? sortControl() : ''}
+      ${view === 'directions' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : historyView()}
     </main>
     <nav class="nav">
@@ -201,23 +213,30 @@ function render() {
 
 function navButton(id, icon, text) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}</button>`; }
 function todayView(active, completed, ops, inOr) {
-  const finishedSteps = state.patients.flatMap(p=>p.steps).filter(s=>s.state==='done').length;
+  const progress = shiftProgress(state.patients);
+  const progressPercent = progress.total ? Math.round(progress.done / progress.total * 100) : 0;
   const engagedPatients = active.filter(p => p.steps.some(s => ['in_progress','in_or','pickup'].includes(s.state)));
   const queuedPatients = active.filter(p => !engagedPatients.includes(p));
   const engaged = engagedPatients.length;
   return `
-    <section class="hero">
-      <div class="hero-line"><div><h2>Вся смена под контролем</h2><p>Сначала ближайшее действие, но общая картина всегда рядом.</p></div><div class="progress-pill">${finishedSteps} готово</div></div>
-      <div class="stats">
-        <div class="stat"><strong>${engaged}</strong><span>активных сейчас</span></div>
-        <div class="stat"><strong>${ops}</strong><span>операции сегодня</span></div>
-        <div class="stat"><strong>${inOr}</strong><span>сейчас в оперблоке</span></div>
+    <section class="shift-progress" aria-label="Прогресс смены">
+      <div class="shift-progress-line">
+        <div><strong>Сделано за смену</strong><span>по текущему плану</span></div>
+        <b>${progress.total ? `${progress.done}/${progress.total}` : '0'}</b>
       </div>
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.total}" aria-valuenow="${progress.done}"><i style="width:${progressPercent}%"></i></div>
     </section>
-    <div class="section-head"><h2>Сейчас вне палаты</h2><span>${engaged} задействовано</span></div>
-    <div class="patient-list">${engagedPatients.length ? engagedPatients.map(compactPatientCard).join('') : '<div class="empty">Сейчас все пациенты в палатах</div>'}</div>
-    <div class="section-head"><h2>Очередь</h2><span>автосортировка включена</span></div>
-    <div class="patient-list">${queuedPatients.length ? queuedPatients.map(compactPatientCard).join('') : '<div class="empty">Новых поручений пока нет</div>'}</div>
+    ${engagedPatients.length ? `
+      <div class="section-head workstream-head"><h2>Сейчас вне палаты</h2><span>${engaged} задействовано</span></div>
+      <div class="patient-list">${engagedPatients.map(compactPatientCard).join('')}</div>
+    ` : ''}
+    <div class="section-head workstream-head queue-head"><h2>Очередь</h2>${sortControl(true)}</div>
+    <div class="patient-list">${queuedPatients.length ? queuedPatients.map(compactPatientCard).join('') : '<div class="empty compact-empty">Очередь свободна</div>'}</div>
+    <section class="shift-summary" aria-label="Сводка смены">
+      <div class="stat"><strong>${engaged}</strong><span>активных сейчас</span></div>
+      <div class="stat"><strong>${ops}</strong><span>операции сегодня</span></div>
+      <div class="stat"><strong>${inOr}</strong><span>в оперблоке</span></div>
+    </section>
     <button class="completed-toggle" data-action="toggle-completed" aria-expanded="${showCompleted}">
       <span>Выполнено сегодня</span>
       <strong><span>${completed.length}</span><i class="toggle-chevron ${showCompleted ? 'open' : ''}" aria-hidden="true"></i></strong>
@@ -595,6 +614,6 @@ function handleAction(action, el, e) {
   if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=clone(seed); modal=null; view='today'; save(); return render(); }
 }
 
-globalThis.__MEDFLOW_TEST__={currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients};
+globalThis.__MEDFLOW_TEST__={currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients};
 setInterval(()=>{ if(document.querySelector('.timer')) render(); },30000);
 render();

@@ -177,4 +177,14 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(preserved.settings.sortMode, 'time-desc');
 }
 
-console.log('MedFlow: 18 сценариев пройдены');
+{
+  const progress = api.shiftProgress([{ steps:[
+    step('ЭКГ','done','ecg'),
+    step('Операция','in_or','operation'),
+    step('Рентген','cancelled','xray')
+  ] }]);
+  assert.equal(progress.done, 2);
+  assert.equal(progress.total, 3);
+}
+
+console.log('MedFlow: 19 сценариев пройдены');
