@@ -183,8 +183,22 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
     step('Операция','in_or','operation'),
     step('Рентген','cancelled','xray')
   ] }]);
-  assert.equal(progress.done, 2);
-  assert.equal(progress.total, 3);
+  assert.equal(progress.patients.done, 0);
+  assert.equal(progress.patients.total, 1);
+  assert.equal(progress.tasks.done, 1);
+  assert.equal(progress.tasks.total, 2);
+  assert.equal(progress.tasks.active, 1);
+  assert.equal(progress.tasks.remaining, 1);
+  const cancelledOnly = api.shiftProgress([{ steps:[step('КТ','cancelled','ct')] }]);
+  assert.equal(cancelledOnly.patients.total, 0);
+  assert.equal(cancelledOnly.tasks.total, 0);
 }
 
-console.log('MedFlow: 19 сценариев пройдены');
+{
+  assert.ok(appRoot.innerHTML.includes('class="shift-progress"'));
+  assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
+  assert.ok(!appRoot.innerHTML.includes('class="brand"'));
+  assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
+}
+
+console.log('MedFlow: 20 сценариев пройдены');
