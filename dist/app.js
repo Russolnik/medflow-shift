@@ -18,6 +18,8 @@ const SYSTEM_STEPS = [
 ];
 
 const SORT_MODES = ['priority', 'time-asc', 'time-desc'];
+const ADD_BUTTON_POSITIONS = ['floating', 'inline'];
+const DOCUMENT_STATUSES = ['taken', 'not_required'];
 
 function uid() {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
@@ -32,6 +34,8 @@ function clone(value) {
 }
 
 const seed = {
+  schemaVersion: 2,
+  shiftStartedAt: Date.now(),
   patients: [
     {
       id: uid(), surname: 'Иванов', room: '6', block: 'xo', transport: 'Кресло', priority: 'operation', pinned: false,
@@ -55,7 +59,7 @@ const seed = {
   ],
   archive: [],
   directions: clone(DEFAULT_DIRECTIONS),
-  settings: { sortMode: 'priority' }
+  settings: { sortMode: 'priority', addButtonPosition: 'floating' }
 };
 
 let state = load();
@@ -70,12 +74,52 @@ function load() {
 }
 function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 function esc(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function validTimestamp(value) { return Number.isFinite(value) && value > 0 ? value : null; }
+function normalizeDocumentRecord(value) {
+  if (!value || !DOCUMENT_STATUSES.includes(value.status)) return null;
+  return { status:value.status, at:validTimestamp(value.at) };
+}
+function normalizeStep(step) {
+  if (!step || typeof step !== 'object') return null;
+  step.documents = step.documents && typeof step.documents === 'object' ? step.documents : {};
+  const start = normalizeDocumentRecord(step.documents.start);
+  const finish = normalizeDocumentRecord(step.documents.finish);
+  step.documents = {};
+  if (start) step.documents.start = start;
+  if (finish) step.documents.finish = finish;
+  if (isOperationStep(step) && validTimestamp(step.startedAt) && !validTimestamp(step.arrivedAt) && ['in_or','pickup','done'].includes(step.state)) {
+    step.arrivedAt = step.startedAt;
+    delete step.startedAt;
+  }
+  return step;
+}
+function normalizePatient(patient) {
+  if (!patient || typeof patient !== 'object') return null;
+  patient.steps = Array.isArray(patient.steps) ? patient.steps.map(normalizeStep).filter(Boolean) : [];
+  patient.events = Array.isArray(patient.events) ? patient.events : [];
+  return patient;
+}
+function inferShiftStart(patients) {
+  const timestamps = (Array.isArray(patients) ? patients : []).flatMap(patient => [
+    ...(Array.isArray(patient?.events) ? patient.events.map(event => validTimestamp(event?.at)) : []),
+    ...(Array.isArray(patient?.steps) ? patient.steps.flatMap(step => ['startedAt','arrivedAt','readyAt','pickedUpAt','finishedAt'].map(key => validTimestamp(step?.[key]))) : [])
+  ]).filter(Boolean);
+  return timestamps.length ? Math.min(...timestamps) : null;
+}
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
-  next.patients = Array.isArray(next.patients) ? next.patients : [];
-  next.archive = Array.isArray(next.archive) ? next.archive : [];
+  next.schemaVersion = 2;
+  next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
+  next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
+  next.archive = Array.isArray(next.archive) ? next.archive.filter(shift => shift && typeof shift === 'object') : [];
+  next.archive.forEach(shift => {
+    shift.patients = Array.isArray(shift.patients) ? shift.patients.map(normalizePatient).filter(Boolean) : [];
+    shift.startedAt = validTimestamp(shift.startedAt) || inferShiftStart(shift.patients);
+    shift.closedAt = validTimestamp(shift.closedAt);
+  });
   next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
   if (!SORT_MODES.includes(next.settings.sortMode)) next.settings.sortMode = 'priority';
+  if (!ADD_BUTTON_POSITIONS.includes(next.settings.addButtonPosition)) next.settings.addButtonPosition = 'floating';
   if (!Array.isArray(next.directions)) next.directions = clone(DEFAULT_DIRECTIONS);
   next.directions = next.directions
     .filter(item => item && item.id && String(item.label || '').trim())
@@ -161,6 +205,76 @@ function fmtDuration(ms) {
   return h ? `${h} ч ${m} мин` : `${m} мин`;
 }
 function timerClass(ms) { const m = ms/60000; return m < 60 ? 'green' : m < 120 ? 'yellow' : 'red'; }
+function fmtClock(value) {
+  const timestamp = validTimestamp(value);
+  return timestamp ? new Date(timestamp).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}) : '—';
+}
+function durationBetween(start, end) {
+  const from = validTimestamp(start), to = validTimestamp(end);
+  return from && to && to >= from ? to - from : null;
+}
+function operationElapsed(step, now=Date.now()) {
+  const started = validTimestamp(step?.arrivedAt) || validTimestamp(step?.startedAt);
+  if (!started) return 0;
+  const ended = validTimestamp(step?.pickedUpAt) || validTimestamp(now);
+  return ended && ended >= started ? ended - started : 0;
+}
+function setStepDocument(step, stage, status, at=Date.now()) {
+  if (!step || !['start','finish'].includes(stage) || !DOCUMENT_STATUSES.includes(status)) return false;
+  step.documents ||= {};
+  step.documents[stage] = {status, at:validTimestamp(at)};
+  return true;
+}
+function documentStatusLabel(record, stage='start') {
+  if (record?.status === 'taken') return stage === 'finish' ? 'документы забраны' : 'документы взяты';
+  if (record?.status === 'not_required') return 'документы не требовались';
+  return 'документы не отмечены';
+}
+function stepHistoryFacts(step, now=Date.now()) {
+  const operation = isOperationStep(step);
+  const startedAt = validTimestamp(step?.startedAt);
+  const arrivedAt = validTimestamp(step?.arrivedAt);
+  const readyAt = validTimestamp(step?.readyAt);
+  const pickedUpAt = validTimestamp(step?.pickedUpAt);
+  const finishedAt = validTimestamp(step?.finishedAt);
+  const operationEnd = pickedUpAt || (['in_or','pickup'].includes(step?.state) ? validTimestamp(now) : finishedAt || readyAt);
+  return {
+    title:step?.title || typeLabel(step?.type),
+    state:step?.state || 'waiting',
+    operation,
+    startedAt,
+    arrivedAt,
+    readyAt,
+    pickedUpAt,
+    finishedAt,
+    duration:durationBetween(operation ? arrivedAt : startedAt, operation ? operationEnd : finishedAt),
+    destination:step?.destination || '',
+    startDocuments:documentStatusLabel(step?.documents?.start,'start'),
+    finishDocuments:documentStatusLabel(step?.documents?.finish,'finish')
+  };
+}
+function addButtonPosition(settings=state.settings) {
+  return ADD_BUTTON_POSITIONS.includes(settings?.addButtonPosition) ? settings.addButtonPosition : 'floating';
+}
+function showFloatingAdd(currentView=view, settings=state.settings) {
+  return ['today','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
+}
+function captureViewPosition() {
+  return {
+    top:Number.isFinite(globalThis.scrollY) ? globalThis.scrollY : 0,
+    filtersLeft:document.querySelector?.('.filters')?.scrollLeft || 0
+  };
+}
+function restoreViewPosition(position) {
+  if (!position) return;
+  const restore = () => {
+    const filters = document.querySelector?.('.filters');
+    if (filters) filters.scrollLeft = position.filtersLeft;
+    globalThis.scrollTo?.(0, position.top);
+  };
+  if (typeof globalThis.requestAnimationFrame === 'function') globalThis.requestAnimationFrame(restore);
+  else restore();
+}
 function shiftProgress(patients) {
   const counted = patients.filter(patient => patient.steps.length > 0);
   const taskSteps = counted.flatMap(patient => patient.steps);
@@ -186,21 +300,23 @@ function shiftProgress(patients) {
 }
 function stepTitle(step) {
   if (step.state === 'in_or') return 'В оперблоке — ожидается вызов';
-  if (step.state === 'pickup') return 'Позвонили — нужно забрать';
+  if (step.state === 'pickup') return step.pickedUpAt ? 'Забран — укажи место доставки' : 'Позвонили — нужно забрать';
+  if (isOperationStep(step) && step.state === 'in_progress') return 'В пути в оперблок';
   if (step.state === 'in_progress') return `Сейчас: ${step.title}`;
   if (step.state === 'active') return step.title;
   if (step.state === 'waiting') return `Предстоит: ${step.title}`;
   return step.title;
 }
 function actionLabel(step) {
-  if (isOperationStep(step) && ['active','waiting','in_progress'].includes(step.state)) return 'Доставлен в оперблок';
+  if (isOperationStep(step) && step.state === 'in_progress') return 'Доставлен в оперблок';
   if (step.state === 'in_or') return 'Позвонили — забирать';
-  if (step.state === 'pickup') return 'Забран из оперблока';
+  if (step.state === 'pickup') return step.pickedUpAt ? 'Куда доставлен' : 'Забран из оперблока';
   if (step.state === 'in_progress') return 'Завершить';
   return 'Начать';
 }
 
-function render() {
+function render(preservePosition=false) {
+  const position = preservePosition ? captureViewPosition() : null;
   const active = sortPatients(state.patients.filter(p => !isComplete(p)));
   const completed = sortPatients(state.patients.filter(isComplete));
   const ops = state.patients.filter(hasTodayOperation).length;
@@ -211,6 +327,7 @@ function render() {
       ${view === 'directions' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : historyView()}
     </main>
+    ${showFloatingAdd() ? '<button class="fab" data-action="add" aria-label="Записать пациента">＋</button>' : ''}
     <nav class="nav">
       ${navButton('today','⌂','Сегодня')}
       ${navButton('directions','⌘','Направления')}
@@ -219,17 +336,19 @@ function render() {
     ${modal ? modalView() : ''}
   `;
   bind();
+  restoreViewPosition(position);
 }
 
 function navButton(id, icon, text) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}</button>`; }
 function topbarView() {
+  const inlineAdd = addButtonPosition() === 'inline';
   if (view !== 'today') {
-    return `<header class="topbar section-topbar"><h1>${view==='directions'?'Направления':'История'}</h1><button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button></header>`;
+    return `<header class="topbar section-topbar"><h1>${view==='directions'?'Направления':'История'}</h1>${view==='directions'&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
   }
   const progress = shiftProgress(state.patients);
   const taskPercent = value => progress.tasks.total ? (value / progress.tasks.total * 100).toFixed(2) : 0;
   const patientCount = progress.patients.total ? `${progress.patients.done}/${progress.patients.total}` : '0';
-  return `<header class="topbar today-topbar">
+  return `<header class="topbar today-topbar ${inlineAdd?'inline-add':''}">
     <details class="shift-progress">
       <summary aria-label="Завершено маршрутов пациентов: ${progress.patients.done} из ${progress.patients.total}">
         <span class="progress-track" role="img" aria-label="Задачи: выполнено ${progress.tasks.done}, выполняется ${progress.tasks.active}, отменено или перенесено ${progress.tasks.cancelled}, ожидает ${progress.tasks.waiting}">
@@ -247,7 +366,7 @@ function topbarView() {
       </div>
       <p>Счётчик — пациенты, полоска — задачи. Удалённые ошибки не учитываются.</p>
     </details>
-    <button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>
+    ${inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}
   </header>`;
 }
 function todayView(active, completed, ops, inOr) {
@@ -289,14 +408,75 @@ function directionsView() {
   `;
 }
 
+function historyStepView(step) {
+  const facts = stepHistoryFacts(step);
+  const stopped = isStoppedStep(step);
+  const status = step.state === 'done' ? 'Готово' : step.state === 'cancelled' ? 'Отменено' : step.state === 'postponed' ? 'Перенесено' : ['in_progress','in_or','pickup'].includes(step.state) ? 'В работе' : 'Ожидает';
+  const timeline = [];
+  if (facts.operation) {
+    if (facts.startedAt) timeline.push(`взял из палаты ${fmtClock(facts.startedAt)}`);
+    if (facts.arrivedAt) timeline.push(`доставлен ${fmtClock(facts.arrivedAt)}`);
+    if (facts.duration !== null) timeline.push(`в оперблоке ${fmtDuration(facts.duration)}`);
+    if (facts.readyAt) timeline.push(`вызов ${fmtClock(facts.readyAt)}`);
+    if (facts.pickedUpAt) timeline.push(`забран ${fmtClock(facts.pickedUpAt)}`);
+    if (!stopped && facts.finishedAt) timeline.push(`${facts.destination || 'завершено'} ${fmtClock(facts.finishedAt)}`);
+  } else if (stopped) {
+    if (facts.startedAt) timeline.push(`начато ${fmtClock(facts.startedAt)}`);
+    if (facts.duration !== null) timeline.push(fmtDuration(facts.duration));
+  } else {
+    if (facts.startedAt && facts.finishedAt) timeline.push(`${fmtClock(facts.startedAt)}–${fmtClock(facts.finishedAt)}`);
+    else if (facts.startedAt) timeline.push(`начато ${fmtClock(facts.startedAt)}`);
+    else if (facts.finishedAt) timeline.push(`завершено ${fmtClock(facts.finishedAt)}`);
+    if (facts.duration !== null) timeline.push(fmtDuration(facts.duration));
+  }
+  if (stopped) timeline.push(`${status}${facts.finishedAt ? ` ${fmtClock(facts.finishedAt)}` : ''}`);
+  if (!timeline.length) timeline.push(step.state === 'done' ? 'выполнено · время не записано' : 'время пока не записано');
+  return `<div class="history-step ${stopped?'stopped':step.state==='done'?'done':['in_progress','in_or','pickup'].includes(step.state)?'running':''}">
+    <div class="history-step-head"><b>${esc(facts.title)}</b><span>${status}</span></div>
+    <p>${timeline.map(esc).join(' · ')}</p>
+    <small>Перед выходом: ${esc(facts.startDocuments)} · при завершении: ${esc(facts.finishDocuments)}</small>
+  </div>`;
+}
+
+function historyPatientCard(patient) {
+  return `<article class="history-patient">
+    <div class="history-patient-head"><b>${esc(patient.surname || 'Без фамилии')} <span>· п.${esc(patient.room || '?')}</span></b><small>${esc(patient.transport || 'способ не указан')}</small></div>
+    <div class="history-steps">${patient.steps.map(historyStepView).join('') || '<div class="empty compact-empty">Нет этапов</div>'}</div>
+  </article>`;
+}
+
+function shiftCardView(shift, current=false) {
+  const patients = Array.isArray(shift.patients) ? shift.patients : [];
+  const progress = shiftProgress(patients);
+  const datedAt = validTimestamp(shift.closedAt) || validTimestamp(shift.startedAt);
+  const label = current ? 'Текущая смена' : datedAt ? new Date(datedAt).toLocaleDateString('ru-RU') : 'Дата не записана';
+  const period = current
+    ? `с ${fmtClock(shift.startedAt)}`
+    : shift.startedAt && shift.closedAt ? `${fmtClock(shift.startedAt)}–${fmtClock(shift.closedAt)}` : shift.startedAt ? `с ${fmtClock(shift.startedAt)}` : shift.closedAt ? `до ${fmtClock(shift.closedAt)}` : 'время не записано';
+  return `<details class="shift-card ${current?'current':''}">
+    <summary><div><b>${label}</b><span>${patients.length} пациентов · ${progress.tasks.handled}/${progress.tasks.total} задач обработано</span></div><div class="shift-period"><small>${period}</small><i class="toggle-chevron" aria-hidden="true"></i></div></summary>
+    <div class="shift-details">${patients.map(historyPatientCard).join('') || '<div class="empty compact-empty">В этой смене пока нет пациентов</div>'}</div>
+  </details>`;
+}
+
 function historyView() {
-  const events = state.patients.flatMap(p => (p.events||[]).map(e=>({...e,patient:p.surname}))).sort((a,b)=>b.at-a.at);
   const archived = state.archive || [];
+  const buttonPosition = addButtonPosition();
   return `
-    <div class="section-head"><h2>История смены</h2><span>${events.length} событий</span></div>
-    ${events.length ? events.map(e=>`<div class="history-day"><div class="between row"><strong>${esc(e.patient)}</strong><span class="eyebrow">${new Date(e.at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}</span></div><p>${esc(e.text)}</p></div>`).join('') : '<div class="empty">Здесь появятся выполненные этапы, отмены и передачи.</div>'}
+    <div class="section-head"><h2>Смены</h2><span>${archived.length + 1}</span></div>
+    ${shiftCardView({startedAt:state.shiftStartedAt,patients:state.patients},true)}
     <div class="section-head"><h2>Прошлые смены</h2><span>${archived.length}</span></div>
-    ${archived.length ? archived.slice().reverse().map(shift=>`<div class="history-day"><div class="between row"><strong>${new Date(shift.closedAt).toLocaleDateString('ru-RU')}</strong><span class="eyebrow">${shift.patients.length} карточек</span></div><p>Выполнено маршрутов: ${shift.patients.filter(isComplete).length} · событий: ${shift.patients.reduce((n,p)=>n+(p.events?.length||0),0)}</p></div>`).join('') : '<div class="empty">Завершённые смены появятся здесь</div>'}
+    <div class="shift-list">${archived.length ? archived.slice().reverse().map(shift=>shiftCardView(shift)).join('') : '<div class="empty">Завершённые смены появятся здесь</div>'}</div>
+    <details class="about-panel settings-panel">
+      <summary><div><b>Настройки интерфейса</b><span>положение кнопки быстрой записи</span></div><i class="toggle-chevron" aria-hidden="true"></i></summary>
+      <div class="about-content">
+        <p>Выбери, где удобнее держать кнопку «＋» на экранах «Сегодня» и «Направления».</p>
+        <div class="position-options">
+          <button class="position-option ${buttonPosition==='floating'?'active':''}" data-action="set-add-position" data-position="floating" aria-pressed="${buttonPosition==='floating'}"><b>Справа снизу</b><span>Всегда поверх экрана, над навигацией</span></button>
+          <button class="position-option ${buttonPosition==='inline'?'active':''}" data-action="set-add-position" data-position="inline" aria-pressed="${buttonPosition==='inline'}"><b>Возле прогресса</b><span>В верхней строке страницы</span></button>
+        </div>
+      </div>
+    </details>
     <div class="section-head"><h2>Управление сменой</h2></div>
     <div class="patient-list"><button class="primary-btn" data-action="new-shift">Начать новую пустую смену</button><button class="danger-btn" data-action="reset">Вернуть демонстрационные данные</button></div>
     <details class="about-panel">
@@ -317,7 +497,7 @@ function compactPatientCard(p) {
   const next = nextWaitingStep(p);
   const urgent = step?.urgent || p.priority === 'urgent';
   const orStep = p.steps.find(s => ['in_or','pickup'].includes(s.state));
-  const elapsed = orStep?.startedAt ? Date.now() - orStep.startedAt : 0;
+  const elapsed = operationElapsed(orStep);
   const currentIndex = step ? p.steps.indexOf(step) : -1;
   const upcoming = currentIndex >= 0
     ? p.steps.slice(currentIndex + 1).filter(s => !isTerminalStep(s)).slice(0, 2)
@@ -348,7 +528,7 @@ function patientCard(p) {
   const step = currentStep(p);
   const urgent = step?.urgent || p.priority==='urgent';
   const orStep = p.steps.find(s=>['in_or','pickup'].includes(s.state));
-  const elapsed = orStep?.startedAt ? Date.now()-orStep.startedAt : 0;
+  const elapsed = operationElapsed(orStep);
   return `<article class="patient-card ${urgent?'urgent':''}">
     <div class="patient-top">
       <div class="row between"><div><div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room||'?')}</span></div></div>
@@ -364,7 +544,34 @@ function patientCard(p) {
   </article>`;
 }
 
+function documentChoice(name, stage, title) {
+  const taken = stage === 'finish' ? 'Забрал историю / талон / направление' : 'Взял историю / талон / направление';
+  return `<fieldset class="document-choice"><legend>${esc(title)}</legend>
+    <label><input required type="radio" name="${name}" value="taken" /><span><b>${taken}</b><small>Отметка сохранится со временем телефона</small></span></label>
+    <label><input required type="radio" name="${name}" value="not_required" /><span><b>Не требуется</b><small>Для этого этапа документы не нужны</small></span></label>
+  </fieldset>`;
+}
+
 function modalView() {
+  if (modal.type === 'documents') {
+    const p = state.patients.find(x => x.id === modal.patient);
+    const step = p && currentStep(p);
+    const next = p && nextWaitingStep(p);
+    if (!p || !step) return '';
+    const mode = modal.mode;
+    const title = mode === 'start' ? 'Начало сопровождения' : mode === 'finish' ? 'Перед завершением' : mode === 'continue' ? 'Перейти к следующему этапу' : mode === 'handoff' ? 'Перед передачей' : mode === 'stop' ? (modal.stopAction === 'postpone-step' ? 'Перед переносом' : 'Перед отменой') : 'Перед забором пациента';
+    const subtitle = mode === 'continue' && next ? `${step.title} → ${next.title}` : mode === 'start' ? `Погрузка / выход · ${step.title}` : step.title;
+    const needsStart = ['start','continue'].includes(mode);
+    const needsFinish = ['finish','continue','operation-pickup','handoff','stop'].includes(mode);
+    return `<div class="modal-backdrop" data-action="close"><section class="modal document-modal" onclick="event.stopPropagation()">
+      <h2>${title}</h2><p class="modal-sub">${esc(subtitle)} · выбери один вариант в каждом блоке</p>
+      <form id="documents-form" class="document-form">
+        ${needsFinish?documentChoice('finish-documents','finish','Что с документами при завершении?'):''}
+        ${needsStart?documentChoice('start-documents','start',mode==='continue'?'Что взять на следующий этап?':'Что взять с собой?'):''}
+      </form>
+      <div class="modal-actions"><button class="secondary-btn" data-action="close">Назад</button><button class="primary-btn" data-action="confirm-documents">Подтвердить</button></div>
+    </section></div>`;
+  }
   if (modal.type === 'details') {
     const p = state.patients.find(x => x.id === modal.patient);
     if (!p) return '';
@@ -486,7 +693,7 @@ function modalView() {
     const p = state.patients.find(x => x.id === modal.patient);
     const next = p ? nextWaitingStep(p) : null;
     return `<div class="modal-backdrop"><section class="modal"><h2>Куда доставлен пациент?</h2><p class="modal-sub">Таймер остановится после выбора</p>
-      ${next?`<label class="continue-toggle"><input id="continue-after-operation" type="checkbox" /><span><b>Сразу перейти дальше</b><small>Следующий этап: ${esc(next.title)}</small></span></label>`:''}
+      ${next?`<label class="continue-toggle"><input id="continue-after-operation" type="checkbox" /><span><b>После доставки открыть следующий этап</b><small>Следующий этап: ${esc(next.title)} · документы подтвердим отдельно</small></span></label>`:''}
       <div class="patient-list" style="margin-top:16px">
       ${['Вернулся в свою палату','Переведён в реанимацию','Переведён в другое отделение','Передан другому сотруднику','Другое место'].map(x=>`<button class="secondary-btn" data-action="finish-operation" data-patient="${modal.patient}" data-destination="${x}">${x}</button>`).join('')}
       <button class="secondary-btn" data-action="close">Назад, пока не выбирать</button></div></section></div>`;
@@ -496,8 +703,8 @@ function modalView() {
 
 function bind() {
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view; render();});
-  document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render();});
-  document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(); });
+  document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
+  document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(true); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
   document.querySelectorAll('[data-direction-name]').forEach(el=>el.oninput=()=>{ const item=modal?.directions?.find(item=>item.id===el.dataset.directionName); if(item) item.label=el.value; });
@@ -507,19 +714,37 @@ function log(p,text) { p.events ||= []; p.events.push({at:Date.now(),text}); }
 function nextWaitingStep(p) { return p.steps.find(s=>s.state==='waiting'); }
 function activateNext(p) { const next=nextWaitingStep(p); if(next) next.state='active'; return next; }
 function canContinueNow(p) { const step=currentStep(p); return step?.state==='in_progress' && !isOperationStep(step) && Boolean(nextWaitingStep(p)); }
-function completeCurrentStep(p, startNext=false) {
+function completeCurrentStep(p, startNext=false, at=Date.now()) {
   const step=currentStep(p);
   if(!step) return {step:null,next:null};
-  step.state='done'; step.finishedAt=Date.now();
+  step.state='done'; step.finishedAt=at;
   const next=activateNext(p);
-  if(startNext && next) { next.state='in_progress'; next.startedAt ||= Date.now(); }
+  if(startNext && next) { next.state='in_progress'; next.startedAt ||= at; }
   return {step,next};
+}
+function stopCurrentStep(p, action, at=Date.now()) {
+  const step=currentStep(p);
+  if(!step || !['cancel-step','postpone-step'].includes(action)) return null;
+  step.state=action==='postpone-step'?'postponed':'cancelled';
+  step.finishedAt=at;
+  activateNext(p);
+  syncPatientPriority(p,Boolean(currentStep(p)?.urgent));
+  return step;
 }
 
 function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
   if (action==='close') { modal=null; return render(); }
   if (action==='toggle-completed') { showCompleted=!showCompleted; return render(); }
+  if (action==='set-add-position') {
+    state.settings.addButtonPosition=ADD_BUTTON_POSITIONS.includes(el.dataset.position)?el.dataset.position:'floating';
+    save();
+    document.querySelectorAll('[data-action="set-add-position"]').forEach(button=>{
+      const active=button.dataset.position===state.settings.addButtonPosition;
+      button.classList.toggle('active',active); button.setAttribute('aria-pressed',String(active));
+    });
+    return;
+  }
   if (action==='manage-directions') { modal={type:'directions',directions:clone(getDirections()),error:''}; return render(); }
   if (action==='direction-remove') {
     const item=modal?.directions?.[Number(el.dataset.index)];
@@ -595,30 +820,63 @@ function handleAction(action, el, e) {
     state.patients.forEach(p=>{ if(p.id!==el.dataset.patient) p.pinned=false; });
     const p=state.patients.find(p=>p.id===el.dataset.patient); p.pinned=!p.pinned; log(p,p.pinned?'Назначен следующим':'Ручной приоритет снят'); save(); return render();
   }
+  if (action==='confirm-documents') {
+    const form=document.getElementById('documents-form'); if(!form?.reportValidity()) return;
+    const fd=new FormData(form), p=state.patients.find(p=>p.id===modal.patient), s=p&&currentStep(p); if(!p||!s)return;
+    const mode=modal.mode, stopAction=modal.stopAction, now=Date.now();
+    const startStatus=fd.get('start-documents'), finishStatus=fd.get('finish-documents');
+    if (['start','continue'].includes(mode) && !DOCUMENT_STATUSES.includes(startStatus)) return;
+    if (['finish','continue','operation-pickup','handoff','stop'].includes(mode) && !DOCUMENT_STATUSES.includes(finishStatus)) return;
+    p.pinned=false;
+    if (mode==='start') {
+      setStepDocument(s,'start',startStatus,now); s.state='in_progress'; s.startedAt ||= now;
+      log(p,`Начато сопровождение: ${s.title}`); modal=null;
+    } else if (mode==='finish') {
+      setStepDocument(s,'finish',finishStatus,now);
+      const finished=completeCurrentStep(p,false,now); log(p,`Выполнено: ${finished.step.title}`); modal=null;
+    } else if (mode==='continue') {
+      const next=nextWaitingStep(p); if(!next)return;
+      setStepDocument(s,'finish',finishStatus,now);
+      const moved=completeCurrentStep(p,true,now);
+      setStepDocument(moved.next,'start',startStatus,now);
+      log(p,`Выполнено: ${moved.step.title} → начато сопровождение: ${moved.next.title}`); modal=null;
+    } else if (mode==='operation-pickup') {
+      setStepDocument(s,'finish',finishStatus,now); s.pickedUpAt ||= now;
+      log(p,'Пациент забран из оперблока'); modal={type:'destination',patient:p.id};
+    } else if (mode==='handoff') {
+      setStepDocument(s,'finish',finishStatus,now); s.state='done'; s.finishedAt=now; s.destination='Передан другому сотруднику';
+      log(p,`Передано другому сотруднику: ${s.title}`); activateNext(p); syncPatientPriority(p,Boolean(currentStep(p)?.urgent)); modal=null;
+    } else if (mode==='stop') {
+      setStepDocument(s,'finish',finishStatus,now);
+      const stopped=stopCurrentStep(p,stopAction,now);
+      log(p,`${stopped.state==='postponed'?'Перенесено':'Отменено'}: ${stopped.title}`); modal=null;
+    }
+    save(); return render();
+  }
   if (action==='advance') {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
     p.pinned=false;
-    if (isOperationStep(s) && ['active','waiting','in_progress'].includes(s.state)) { s.state='in_or'; s.startedAt=Date.now(); log(p,'Доставлен в оперблок, таймер запущен'); }
-    else if (s.state==='in_or') { s.state='pickup'; log(p,'Поступил вызов: пациента нужно забрать'); }
-    else if (s.state==='pickup') { modal={type:'destination',patient:p.id}; return render(); }
-    else if (s.state==='in_progress') { const finished=completeCurrentStep(p); log(p,`Выполнено: ${finished.step.title}`); }
-    else { s.state='in_progress'; log(p,`Начато: ${s.title}`); }
+    if (isOperationStep(s) && ['active','waiting'].includes(s.state)) { modal={type:'documents',mode:'start',patient:p.id}; return render(); }
+    if (isOperationStep(s) && s.state==='in_progress') { s.state='in_or'; s.arrivedAt=Date.now(); log(p,'Доставлен в оперблок, таймер запущен'); }
+    else if (s.state==='in_or') { s.state='pickup'; s.readyAt=Date.now(); log(p,'Поступил вызов: пациента нужно забрать'); }
+    else if (s.state==='pickup') { modal=s.pickedUpAt?{type:'destination',patient:p.id}:{type:'documents',mode:'operation-pickup',patient:p.id}; return render(); }
+    else if (s.state==='in_progress') { modal={type:'documents',mode:'finish',patient:p.id}; return render(); }
+    else { modal={type:'documents',mode:'start',patient:p.id}; return render(); }
     save(); return render();
   }
   if (action==='advance-next') {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p);
     if(!p || !s || s.state!=='in_progress' || !nextWaitingStep(p)) return;
-    p.pinned=false;
-    const moved=completeCurrentStep(p,true);
-    log(p,`Выполнено: ${moved.step.title} → начато: ${moved.next.title}`);
-    save(); return render();
+    modal={type:'documents',mode:'continue',patient:p.id}; return render();
   }
   if (action==='finish-operation') {
-    const p=state.patients.find(p=>p.id===el.dataset.patient);
+    const p=state.patients.find(p=>p.id===el.dataset.patient), s=p&&currentStep(p); if(!p||!s)return;
     const continueNow=Boolean(document.getElementById('continue-after-operation')?.checked);
-    const finished=completeCurrentStep(p,continueNow);
-    log(p,`Забран из оперблока: ${el.dataset.destination}${continueNow&&finished.next?` → начато: ${finished.next.title}`:''}`);
-    modal=null; save(); return render();
+    const now=Date.now(); s.destination=el.dataset.destination;
+    const finished=completeCurrentStep(p,false,now);
+    log(p,`Доставлен после оперблока: ${el.dataset.destination}`);
+    modal=continueNow&&finished.next?{type:'documents',mode:'start',patient:p.id}:null;
+    save(); return render();
   }
   if (action==='submit-quick') {
     const form=document.getElementById('quick-form'); if(!form.reportValidity()) return;
@@ -639,24 +897,33 @@ function handleAction(action, el, e) {
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня'); state.patients.push(p); modal=null; save(); return render();
   }
-  if (['cancel-step','postpone-step','handoff'].includes(action)) {
+  if (action==='handoff') { modal={type:'documents',mode:'handoff',patient:el.dataset.patient}; return render(); }
+  if (['cancel-step','postpone-step'].includes(action)) {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
-    const text=action==='cancel-step'?`Отменено: ${s.title}`:action==='postpone-step'?`Перенесено: ${s.title}`:`Передано другому сотруднику: ${s.title}`;
-    s.state=action==='handoff'?'done':action==='postpone-step'?'postponed':'cancelled'; log(p,text); activateNext(p);
-    syncPatientPriority(p,Boolean(currentStep(p)?.urgent)); modal=null; save(); return render();
+    if (['in_progress','in_or','pickup'].includes(s.state) && !s.documents?.finish) {
+      modal={type:'documents',mode:'stop',stopAction:action,patient:p.id}; return render();
+    }
+    const stopped=stopCurrentStep(p,action);
+    log(p,`${stopped.state==='postponed'?'Перенесено':'Отменено'}: ${stopped.title}`); modal=null; save(); return render();
   }
   if (action==='delete-patient') { modal={type:'confirm-delete',patient:el.dataset.patient}; return render(); }
   if (action==='confirm-delete-patient') { state.patients=state.patients.filter(p=>p.id!==el.dataset.patient); modal=null; save(); return render(); }
   if (action==='new-shift') { modal={type:'confirm-new-shift'}; return render(); }
   if (action==='confirm-new-shift') {
     state.archive ||= [];
-    if(state.patients.length) state.archive.push({id:uid(),closedAt:Date.now(),patients:clone(state.patients)});
-    state.patients=[]; modal=null; view='today'; save(); return render();
+    if(state.patients.length) state.archive.push({id:uid(),startedAt:state.shiftStartedAt,closedAt:Date.now(),patients:clone(state.patients)});
+    state.patients=[]; state.shiftStartedAt=Date.now(); modal=null; view='today'; save(); return render();
   }
   if (action==='reset') { modal={type:'confirm-reset'}; return render(); }
-  if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=clone(seed); modal=null; view='today'; save(); return render(); }
+  if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=normalizeState(clone(seed)); state.shiftStartedAt=Date.now(); modal=null; view='today'; save(); return render(); }
 }
 
-globalThis.__MEDFLOW_TEST__={isStoppedStep,isTerminalStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients};
-setInterval(()=>{ if(document.querySelector('.timer')) render(); },30000);
+globalThis.__MEDFLOW_TEST__={
+  isStoppedStep,isTerminalStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,stopCurrentStep,
+  actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,normalizeStep,typeLabel,
+  syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
+  fmtClock,durationBetween,operationElapsed,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
+  captureViewPosition,restoreViewPosition,historyStepView,shiftCardView,inferShiftStart
+};
+setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 render();

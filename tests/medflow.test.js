@@ -11,6 +11,9 @@ const sandbox = {
   Date,
   Math,
   JSON,
+  scrollY: 0,
+  scrollTo: () => {},
+  requestAnimationFrame: callback => callback(),
   crypto: { randomUUID: (() => { let id = 0; return () => `test-${++id}`; })() },
   localStorage: {
     getItem: key => storage.get(key) || null,
@@ -33,8 +36,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const patient = { steps:[step('КТ','in_progress','ct'),step('Рентген')] };
-  const result = api.completeCurrentStep(patient, false);
+  const result = api.completeCurrentStep(patient, false, 123456);
   assert.equal(result.step.state, 'done');
+  assert.equal(result.step.finishedAt, 123456);
   assert.equal(result.next.state, 'active');
   assert.equal(api.canContinueNow(patient), false);
 }
@@ -111,6 +115,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   };
   assert.equal(api.hasTodayOperation(mentionedOperation), true);
   assert.equal(api.stepMatchesDirection(mentionedOperation.steps[0], 'operation'), true);
+  assert.equal(api.actionLabel(mentionedOperation.steps[0]), 'Начать');
+  mentionedOperation.steps[0].state = 'in_progress';
   assert.equal(api.actionLabel(mentionedOperation.steps[0]), 'Доставлен в оперблок');
 }
 
@@ -118,8 +124,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const oldPatients = [{ id:'legacy', steps:[] }];
   const oldArchive = [{ id:'shift' }];
   const migrated = api.normalizeState({ patients:oldPatients, archive:oldArchive });
-  assert.equal(migrated.patients, oldPatients);
-  assert.equal(migrated.archive, oldArchive);
+  assert.equal(migrated.patients.length, 1);
+  assert.equal(migrated.patients[0].id, 'legacy');
+  assert.equal(migrated.archive.length, 1);
+  assert.equal(migrated.archive[0].id, 'shift');
+  assert.equal(migrated.schemaVersion, 2);
+  assert.ok(migrated.shiftStartedAt > 0);
   for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера']) {
     assert.ok(migrated.directions.some(item => item.label === label));
   }
@@ -173,8 +183,128 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 {
   const migrated = api.normalizeState({ patients:[], archive:[], directions:[{id:'operation',label:'Операция'}] });
   assert.equal(migrated.settings.sortMode, 'priority');
+  assert.equal(migrated.settings.addButtonPosition, 'floating');
   const preserved = api.normalizeState({ patients:[], archive:[], directions:[{id:'operation',label:'Операция'}], settings:{sortMode:'time-desc'} });
   assert.equal(preserved.settings.sortMode, 'time-desc');
+  const inline = api.normalizeState({ patients:[], archive:[], directions:[{id:'operation',label:'Операция'}], settings:{sortMode:'priority',addButtonPosition:'inline'} });
+  assert.equal(inline.settings.addButtonPosition, 'inline');
+  const invalid = api.normalizeState({ patients:[], archive:[], directions:[{id:'operation',label:'Операция'}], settings:{addButtonPosition:'corner'} });
+  assert.equal(invalid.settings.addButtonPosition, 'floating');
+}
+
+{
+  const s = step('ЭКГ','in_progress','ecg');
+  assert.equal(api.setStepDocument(s,'start','taken',1000), true);
+  assert.equal(api.setStepDocument(s,'finish','not_required',5000), true);
+  assert.equal(s.documents.start.status, 'taken');
+  assert.equal(s.documents.start.at, 1000);
+  assert.equal(api.documentStatusLabel(s.documents.start,'start'), 'документы взяты');
+  assert.equal(api.documentStatusLabel(s.documents.finish,'finish'), 'документы не требовались');
+  assert.equal(api.setStepDocument(s,'middle','taken',6000), false);
+}
+
+{
+  const procedure = {...step('Рентген','done','xray'),startedAt:1000,finishedAt:61000,documents:{start:{status:'taken',at:1000},finish:{status:'not_required',at:61000}}};
+  const facts = api.stepHistoryFacts(procedure);
+  assert.equal(facts.duration, 60000);
+  assert.equal(facts.startDocuments, 'документы взяты');
+  assert.equal(facts.finishDocuments, 'документы не требовались');
+  assert.equal(api.durationBetween(61000,1000), null);
+}
+
+{
+  const operation = {...step('Операция','done','operation'),startedAt:1000,arrivedAt:11000,readyAt:131000,pickedUpAt:141000,finishedAt:201000,destination:'Палата'};
+  const facts = api.stepHistoryFacts(operation);
+  assert.equal(facts.operation, true);
+  assert.equal(facts.duration, 130000);
+  assert.equal(facts.destination, 'Палата');
+  const html = api.historyStepView(operation);
+  assert.ok(html.includes('доставлен'));
+  assert.ok(html.includes('в оперблоке 2 мин'));
+  assert.ok(html.includes('Палата'));
+}
+
+{
+  const liveInOr = {...step('Операция','in_or','operation'),arrivedAt:1000};
+  const livePickup = {...step('Операция','pickup','operation'),arrivedAt:1000,readyAt:31000};
+  assert.equal(api.stepHistoryFacts(liveInOr,61000).duration, 60000);
+  assert.equal(api.stepHistoryFacts(livePickup,61000).duration, 60000);
+  livePickup.pickedUpAt = 41000;
+  assert.equal(api.operationElapsed(livePickup,91000), 40000);
+  assert.equal(api.stepHistoryFacts(livePickup,91000).duration, 40000);
+}
+
+{
+  const migrated = api.normalizeState({
+    patients:[{id:'p',steps:[{id:'op',type:'operation',title:'Операция',state:'in_or',startedAt:1000}],events:[]}],
+    archive:[], directions:[{id:'operation',label:'Операция'}]
+  });
+  const operation = migrated.patients[0].steps[0];
+  assert.equal(operation.arrivedAt, 1000);
+  assert.equal(operation.startedAt, undefined);
+}
+
+{
+  const normalized = api.normalizeState({
+    patients:[{id:'kept',steps:[{...step('ЭКГ','done','ecg'),startedAt:5000,finishedAt:9000}],events:[]}],
+    archive:[null,{id:'old',patients:[{id:'archived',steps:[{...step('КТ','done','ct'),startedAt:1000,finishedAt:4000}],events:[]}]}],
+    directions:[{id:'operation',label:'Операция'}]
+  });
+  assert.equal(normalized.patients[0].id, 'kept');
+  assert.equal(normalized.shiftStartedAt, 5000);
+  assert.equal(normalized.archive.length, 1);
+  assert.equal(normalized.archive[0].startedAt, 1000);
+}
+
+{
+  const patient = {priority:'operation',steps:[
+    {...step('Операция','in_or','operation'),startedAt:1000,arrivedAt:11000,documents:{start:{status:'taken',at:1000}}},
+    step('Палата','waiting','ward')
+  ]};
+  api.setStepDocument(patient.steps[0],'finish','not_required',71000);
+  const stopped = api.stopCurrentStep(patient,'cancel-step',71000);
+  assert.equal(stopped.state, 'cancelled');
+  assert.equal(stopped.finishedAt, 71000);
+  assert.equal(api.currentStep(patient).title, 'Палата');
+  const html = api.historyStepView(stopped);
+  assert.ok(html.includes('доставлен'));
+  assert.ok(html.includes('Отменено'));
+  assert.ok(html.includes('документы не требовались'));
+}
+
+{
+  assert.equal(api.addButtonPosition({}), 'floating');
+  assert.equal(api.addButtonPosition({addButtonPosition:'inline'}), 'inline');
+  assert.equal(api.showFloatingAdd('today',{addButtonPosition:'floating'}), true);
+  assert.equal(api.showFloatingAdd('directions',{addButtonPosition:'floating'}), true);
+  assert.equal(api.showFloatingAdd('history',{addButtonPosition:'floating'}), false);
+  assert.equal(api.showFloatingAdd('today',{addButtonPosition:'inline'}), false);
+}
+
+{
+  const filterNode = {scrollLeft:73};
+  const oldQuerySelector = sandbox.document.querySelector;
+  const oldScrollTo = sandbox.scrollTo;
+  let restoredTop = null;
+  sandbox.scrollY = 240;
+  sandbox.document.querySelector = selector => selector === '.filters' ? filterNode : null;
+  sandbox.scrollTo = (_x,y) => { restoredTop = y; };
+  const position = api.captureViewPosition();
+  filterNode.scrollLeft = 0;
+  sandbox.scrollY = 0;
+  api.restoreViewPosition(position);
+  assert.equal(filterNode.scrollLeft, 73);
+  assert.equal(restoredTop, 240);
+  sandbox.document.querySelector = oldQuerySelector;
+  sandbox.scrollTo = oldScrollTo;
+}
+
+{
+  const shiftHtml = api.shiftCardView({startedAt:1000,closedAt:61000,patients:[{surname:'Иванов',room:'4',transport:'Кресло',steps:[{...step('КТ','done','ct'),startedAt:1000,finishedAt:61000}],events:[]}]});
+  assert.ok(shiftHtml.includes('class="shift-card'));
+  assert.ok(shiftHtml.includes('Иванов'));
+  assert.ok(shiftHtml.includes('КТ'));
+  assert.ok(shiftHtml.includes('1 пациентов'));
 }
 
 {
@@ -233,8 +363,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(appRoot.innerHTML.includes('progress-segment stopped'));
   assert.ok(appRoot.innerHTML.includes('Удалённые ошибки не учитываются'));
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
+  assert.ok(appRoot.innerHTML.includes('class="fab"'));
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
 }
 
-console.log('MedFlow: 22 сценария пройдены');
+console.log('MedFlow: все сценарии пройдены');
