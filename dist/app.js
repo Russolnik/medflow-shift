@@ -210,6 +210,15 @@ async function signOutCloud() {
   cloud.status = navigator.onLine ? 'local' : 'offline';
   cloud.message = 'Облачная сессия завершена. Локальные данные сохранены';
 }
+function authErrorMessage(error) {
+  const message=String(error?.message||'').toLowerCase();
+  if(message.includes('invalid login credentials')) return 'Неверный email или пароль';
+  if(message.includes('email not confirmed')) return 'Сначала подтверди email по ссылке из письма';
+  if(message.includes('user already registered')) return 'Аккаунт с таким email уже существует — попробуй войти';
+  if(message.includes('password should be')) return 'Пароль должен содержать минимум 8 символов';
+  if(message.includes('rate limit')) return 'Слишком много попыток. Подожди немного и повтори';
+  return error?.message||'Не удалось выполнить вход';
+}
 function esc(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function validTimestamp(value) { return Number.isFinite(value) && value > 0 ? value : null; }
 function normalizeDocumentRecord(value) {
@@ -724,15 +733,23 @@ function documentChoice(name, stage, title) {
 
 function modalView() {
   if (modal.type === 'cloud-auth') {
+    const authMode=modal.authMode==='signup'?'signup':'signin';
+    const isSignup=authMode==='signup';
     return `<div class="modal-backdrop" data-action="close"><section class="modal auth-modal" onclick="event.stopPropagation()">
-      <h2>Облачное хранение</h2><p class="modal-sub">Один аккаунт — одинаковые смены на телефоне и компьютере</p>
-      <form id="cloud-auth-form" class="form-grid">
-        <label>Email<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
-        <label>Пароль<input name="password" type="password" autocomplete="current-password" required minlength="8" placeholder="Минимум 8 символов"></label>
+      <div class="auth-heading"><div class="auth-mark" aria-hidden="true">M</div><div><h2>${isSignup?'Создать аккаунт':'Войти в MedFlow'}</h2><p class="modal-sub">Смены будут доступны на телефоне и компьютере</p></div></div>
+      <div class="auth-benefits"><span>✓ Работает офлайн</span><span>✓ Синхронизирует после подключения</span></div>
+      <div class="auth-switch" role="tablist" aria-label="Вход или регистрация">
+        <button type="button" role="tab" aria-selected="${!isSignup}" class="${!isSignup?'active':''}" data-action="cloud-auth-mode" data-mode="signin">Вход</button>
+        <button type="button" role="tab" aria-selected="${isSignup}" class="${isSignup?'active':''}" data-action="cloud-auth-mode" data-mode="signup">Регистрация</button>
+      </div>
+      <form id="cloud-auth-form" class="auth-form">
+        <label class="auth-field"><span>Email</span><input name="email" type="email" inputmode="email" autocomplete="email" required placeholder="name@example.com"></label>
+        <label class="auth-field"><span>Пароль</span><div class="password-field"><input id="cloud-password" name="password" type="password" autocomplete="${isSignup?'new-password':'current-password'}" required minlength="8" placeholder="Минимум 8 символов"><button type="button" data-action="cloud-password-toggle" aria-label="Показать пароль">Показать</button></div></label>
+        ${modal.error?`<p class="form-error auth-error" role="alert">${esc(modal.error)}</p>`:''}
+        <button type="submit" class="primary-btn auth-submit" data-action="${isSignup?'cloud-signup':'cloud-signin'}">${isSignup?'Создать аккаунт':'Войти'}</button>
       </form>
-      ${modal.error?`<p class="form-error">${esc(modal.error)}</p>`:''}
-      <p class="auth-note">Пароль передаётся напрямую в Supabase Auth и не хранится внутри данных MedFlow.</p>
-      <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="secondary-btn" data-action="cloud-signup">Регистрация</button><button class="primary-btn" data-action="cloud-signin">Войти</button></div>
+      <p class="auth-note">${isSignup?'После регистрации может понадобиться подтверждение email.':'Данные на этом устройстве останутся доступны даже без интернета.'}</p>
+      <button type="button" class="auth-close" data-action="close">Не сейчас</button>
     </section></div>`;
   }
   if (modal.type === 'documents') {
@@ -891,6 +908,13 @@ function bind() {
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
   document.querySelectorAll('[data-direction-name]').forEach(el=>el.oninput=()=>{ const item=modal?.directions?.find(item=>item.id===el.dataset.directionName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
+  const authForm=document.getElementById('cloud-auth-form');
+  if(authForm) authForm.onsubmit=(e)=>{
+    e.preventDefault();
+    const action=modal?.authMode==='signup'?'cloud-signup':'cloud-signin';
+    const submit=authForm.querySelector(`[data-action="${action}"]`);
+    if(submit) handleAction(action,submit,e);
+  };
 }
 function log(p,text) { p.events ||= []; p.events.push({at:Date.now(),text}); }
 function nextWaitingStep(p) { return p.steps.find(s=>s.state==='waiting'); }
@@ -949,7 +973,13 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 async function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
   if (action==='close') { modal=null; return render(); }
-  if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',error:''}; return render(); }
+  if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
+  if (action==='cloud-auth-mode') { modal.authMode=el.dataset.mode==='signup'?'signup':'signin'; modal.error=''; return render(); }
+  if (action==='cloud-password-toggle') {
+    const input=document.getElementById('cloud-password');
+    if(!input) return;
+    const showing=input.type==='text'; input.type=showing?'password':'text'; el.textContent=showing?'Показать':'Скрыть'; el.setAttribute('aria-label',showing?'Показать пароль':'Скрыть пароль'); return;
+  }
   if (action==='cloud-signin' || action==='cloud-signup') {
     e?.preventDefault();
     const form=document.getElementById('cloud-auth-form');
@@ -960,7 +990,7 @@ async function handleAction(action, el, e) {
       if(action==='cloud-signin') await signInCloud(email,password); else await signUpCloud(email,password);
       modal=null; view='settings'; return render();
     } catch(error) {
-      modal.error=error.message||'Не удалось выполнить вход';
+      modal.error=authErrorMessage(error);
       return render();
     }
   }
