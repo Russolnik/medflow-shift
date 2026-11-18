@@ -411,7 +411,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v19"));
+  assert.ok(sw.includes("medflow-shell-v20"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
