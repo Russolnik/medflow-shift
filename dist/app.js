@@ -160,16 +160,22 @@ function fmtDuration(ms) {
 }
 function timerClass(ms) { const m = ms/60000; return m < 60 ? 'green' : m < 120 ? 'yellow' : 'red'; }
 function shiftProgress(patients) {
-  return patients.reduce((progress, patient) => {
-    patient.steps.forEach(step => {
-      if (step.state === 'cancelled') return;
-      const operation = isOperationStep(step);
-      progress.total += operation ? 2 : 1;
-      if (step.state === 'done') progress.done += operation ? 2 : 1;
-      else if (operation && ['in_or','pickup'].includes(step.state)) progress.done += 1;
-    });
-    return progress;
-  }, { done:0, total:0 });
+  const counted = patients.filter(patient => patient.steps.some(step => step.state !== 'cancelled'));
+  const taskSteps = counted.flatMap(patient => patient.steps).filter(step => step.state !== 'cancelled');
+  const taskDone = taskSteps.filter(step => step.state === 'done').length;
+  const taskActive = taskSteps.filter(step => ['in_progress','in_or','pickup'].includes(step.state)).length;
+  return {
+    patients: {
+      done: counted.filter(isComplete).length,
+      total: counted.length
+    },
+    tasks: {
+      done: taskDone,
+      total: taskSteps.length,
+      active: taskActive,
+      remaining: Math.max(0, taskSteps.length - taskDone)
+    }
+  };
 }
 function stepTitle(step) {
   if (step.state === 'in_or') return 'В оперблоке — ожидается вызов';
@@ -194,10 +200,7 @@ function render() {
   const inOr = state.patients.filter(p => p.steps.some(s => ['in_or','pickup'].includes(s.state))).length;
   document.getElementById('app').innerHTML = `
     <main class="shell">
-      <header class="topbar">
-        <div class="brand"><div class="logo">M</div><div><h1>MedFlow</h1><div class="eyebrow">Личная смена · демо-данные</div></div></div>
-        <button class="icon-btn" data-action="add">＋ Записать</button>
-      </header>
+      ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : historyView()}
     </main>
@@ -212,20 +215,34 @@ function render() {
 }
 
 function navButton(id, icon, text) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}</button>`; }
-function todayView(active, completed, ops, inOr) {
+function topbarView() {
+  if (view !== 'today') {
+    return `<header class="topbar section-topbar"><h1>${view==='directions'?'Направления':'История'}</h1><button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button></header>`;
+  }
   const progress = shiftProgress(state.patients);
-  const progressPercent = progress.total ? Math.round(progress.done / progress.total * 100) : 0;
+  const patientPercent = progress.patients.total ? Math.round(progress.patients.done / progress.patients.total * 100) : 0;
+  const patientCount = progress.patients.total ? `${progress.patients.done}/${progress.patients.total}` : '0';
+  return `<header class="topbar today-topbar">
+    <details class="shift-progress">
+      <summary aria-label="Завершено маршрутов пациентов: ${progress.patients.done} из ${progress.patients.total}">
+        <span class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${Math.max(1,progress.patients.total)}" aria-valuenow="${progress.patients.done}"><i style="width:${patientPercent}%"></i></span>
+        <b>${patientCount}</b><i class="toggle-chevron" aria-hidden="true"></i>
+      </summary>
+      <div class="progress-breakdown">
+        <div><b>${progress.tasks.done}/${progress.tasks.total}</b><span>задач выполнено</span></div>
+        <div><b>${progress.tasks.active}</b><span>сейчас в работе</span></div>
+        <div><b>${progress.tasks.remaining}</b><span>осталось задач</span></div>
+      </div>
+      <p>По текущему плану. Один пациент может иметь несколько задач.</p>
+    </details>
+    <button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>
+  </header>`;
+}
+function todayView(active, completed, ops, inOr) {
   const engagedPatients = active.filter(p => p.steps.some(s => ['in_progress','in_or','pickup'].includes(s.state)));
   const queuedPatients = active.filter(p => !engagedPatients.includes(p));
   const engaged = engagedPatients.length;
   return `
-    <section class="shift-progress" aria-label="Прогресс смены">
-      <div class="shift-progress-line">
-        <div><strong>Сделано за смену</strong><span>по текущему плану</span></div>
-        <b>${progress.total ? `${progress.done}/${progress.total}` : '0'}</b>
-      </div>
-      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.total}" aria-valuenow="${progress.done}"><i style="width:${progressPercent}%"></i></div>
-    </section>
     ${engagedPatients.length ? `
       <div class="section-head workstream-head"><h2>Сейчас вне палаты</h2><span>${engaged} задействовано</span></div>
       <div class="patient-list">${engagedPatients.map(compactPatientCard).join('')}</div>
@@ -270,6 +287,16 @@ function historyView() {
     ${archived.length ? archived.slice().reverse().map(shift=>`<div class="history-day"><div class="between row"><strong>${new Date(shift.closedAt).toLocaleDateString('ru-RU')}</strong><span class="eyebrow">${shift.patients.length} карточек</span></div><p>Выполнено маршрутов: ${shift.patients.filter(isComplete).length} · событий: ${shift.patients.reduce((n,p)=>n+(p.events?.length||0),0)}</p></div>`).join('') : '<div class="empty">Завершённые смены появятся здесь</div>'}
     <div class="section-head"><h2>Управление сменой</h2></div>
     <div class="patient-list"><button class="primary-btn" data-action="new-shift">Начать новую пустую смену</button><button class="danger-btn" data-action="reset">Вернуть демонстрационные данные</button></div>
+    <details class="about-panel">
+      <summary><div><b>О MedFlow</b><span>для кого и зачем создан прототип</span></div><i class="toggle-chevron" aria-hidden="true"></i></summary>
+      <div class="about-content">
+        <p><b>MedFlow</b> — личный рабочий прототип для координации перемещений пациентов, операций и процедур в течение смены.</p>
+        <p><b>Для кого.</b> Первая версия сделана для сотрудника хирургического отделения, который подаёт и забирает пациентов и одновременно держит в голове несколько поручений.</p>
+        <p><b>Зачем.</b> Чтобы быстрее видеть следующую задачу, не терять изменения плана и хранить цепочку «ЭКГ → рентген → операция → палата» в одном месте.</p>
+        <p><b>Автор идеи.</b> Сотрудник стационара, ежедневно работающий с внутрибольничной транспортировкой пациентов.</p>
+        <p class="about-note">Это личный MVP, а не официальная медицинская система. Он не назначает клинический приоритет и хранит данные только в браузере этого устройства.</p>
+      </div>
+    </details>
   `;
 }
 
@@ -283,21 +310,25 @@ function compactPatientCard(p) {
   const upcoming = currentIndex >= 0
     ? p.steps.slice(currentIndex + 1).filter(s => !['done','cancelled'].includes(s.state)).slice(0, 2)
     : [];
+  const compactTitle = step?.state === 'in_progress' ? step.title : step ? stepTitle(step) : 'Маршрут завершён';
   return `<article class="patient-card compact-card ${urgent?'urgent':''}">
     <div class="compact-head">
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
       <div class="badges">${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
     </div>
-    <div class="compact-main">
+    <div class="compact-body">
       <div class="compact-copy">
         <div class="current-label">Сейчас</div>
-        <div class="compact-title">${step ? esc(stepTitle(step)) : 'Маршрут завершён'}</div>
+        <div class="compact-title">${esc(compactTitle)}</div>
         ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${step.time?`<span>◷ ${esc(step.time)}</span>`:''}${step.needsClarification?'<span>⚠ уточнить данные</span>':''}</div>` : ''}
         ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>`${esc(s.title)}${s.time?` · ${esc(s.time)}`:''}`).join(' → ')}</div>` : ''}
       </div>
-      ${orStep ? `<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>` : ''}
+      <div class="compact-controls">
+        ${orStep ? `<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>` : ''}
+        ${step ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : ''}
+        <div class="compact-tools"><button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>
+      </div>
     </div>
-    ${step ? `<div class="compact-actions ${canContinueNow(p)?'with-next':''}"><button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}<button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>` : `<div class="compact-actions"><button class="secondary-btn" data-action="edit-patient" data-patient="${p.id}">Редактировать</button><button class="secondary-btn compact-details" data-action="details" data-patient="${p.id}">Подробнее</button></div>`}
   </article>`;
 }
 
