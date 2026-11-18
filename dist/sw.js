@@ -1,5 +1,5 @@
-const CACHE = 'medflow-shell-v17';
-const SHELL = ['./', './index.html', './styles.css?v=17', './app.js?v=17'];
+const CACHE = 'medflow-shell-v18';
+const SHELL = ['./', './index.html', './styles.css?v=18', './app.js?v=18'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));

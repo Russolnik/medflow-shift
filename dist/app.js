@@ -325,13 +325,14 @@ function render(preservePosition=false) {
     <main class="shell">
       ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
-      ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : historyView()}
+      ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : view === 'history' ? historyView() : settingsView()}
     </main>
     ${showFloatingAdd() ? '<button class="fab" data-action="add" aria-label="Записать пациента">＋</button>' : ''}
     <nav class="nav">
       ${navButton('today','⌂','Сегодня')}
       ${navButton('directions','⌘','Направления')}
       ${navButton('history','↶','История')}
+      ${navButton('settings','⚙','Настройки')}
     </nav>
     ${modal ? modalView() : ''}
   `;
@@ -343,7 +344,8 @@ function navButton(id, icon, text) { return `<button class="nav-btn ${view===id?
 function topbarView() {
   const inlineAdd = addButtonPosition() === 'inline';
   if (view !== 'today') {
-    return `<header class="topbar section-topbar"><h1>${view==='directions'?'Направления':'История'}</h1>${view==='directions'&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
+    const title = view === 'directions' ? 'Направления' : view === 'history' ? 'История' : 'Настройки';
+    return `<header class="topbar section-topbar"><h1>${title}</h1>${view==='directions'&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
   }
   const progress = shiftProgress(state.patients);
   const taskPercent = value => progress.tasks.total ? (value / progress.tasks.total * 100).toFixed(2) : 0;
@@ -461,24 +463,29 @@ function shiftCardView(shift, current=false) {
 
 function historyView() {
   const archived = state.archive || [];
-  const buttonPosition = addButtonPosition();
   return `
     <div class="section-head"><h2>Смены</h2><span>${archived.length + 1}</span></div>
     ${shiftCardView({startedAt:state.shiftStartedAt,patients:state.patients},true)}
     <div class="section-head"><h2>Прошлые смены</h2><span>${archived.length}</span></div>
     <div class="shift-list">${archived.length ? archived.slice().reverse().map(shift=>shiftCardView(shift)).join('') : '<div class="empty">Завершённые смены появятся здесь</div>'}</div>
-    <details class="about-panel settings-panel">
-      <summary><div><b>Настройки интерфейса</b><span>положение кнопки быстрой записи</span></div><i class="toggle-chevron" aria-hidden="true"></i></summary>
-      <div class="about-content">
-        <p>Выбери, где удобнее держать кнопку «＋» на экранах «Сегодня» и «Направления».</p>
-        <div class="position-options">
-          <button class="position-option ${buttonPosition==='floating'?'active':''}" data-action="set-add-position" data-position="floating" aria-pressed="${buttonPosition==='floating'}"><b>Справа снизу</b><span>Всегда поверх экрана, над навигацией</span></button>
-          <button class="position-option ${buttonPosition==='inline'?'active':''}" data-action="set-add-position" data-position="inline" aria-pressed="${buttonPosition==='inline'}"><b>Возле прогресса</b><span>В верхней строке страницы</span></button>
-        </div>
+  `;
+}
+
+function settingsView() {
+  const buttonPosition = addButtonPosition();
+  return `
+    <section class="settings-card">
+      <div class="settings-card-head"><h2>Быстрая запись</h2><span>положение кнопки «＋»</span></div>
+      <p>Выбери, где удобнее держать кнопку добавления на экранах «Сегодня» и «Направления».</p>
+      <div class="position-options">
+        <button class="position-option ${buttonPosition==='floating'?'active':''}" data-action="set-add-position" data-position="floating" aria-pressed="${buttonPosition==='floating'}"><b>Справа снизу</b><span>Поверх экрана, над навигацией</span></button>
+        <button class="position-option ${buttonPosition==='inline'?'active':''}" data-action="set-add-position" data-position="inline" aria-pressed="${buttonPosition==='inline'}"><b>В верхней строке</b><span>Рядом с прогрессом или заголовком</span></button>
       </div>
-    </details>
-    <div class="section-head"><h2>Управление сменой</h2></div>
-    <div class="patient-list"><button class="primary-btn" data-action="new-shift">Начать новую пустую смену</button><button class="danger-btn" data-action="reset">Вернуть демонстрационные данные</button></div>
+    </section>
+    <section class="settings-card">
+      <div class="settings-card-head"><h2>Смена и данные</h2><span>служебные действия</span></div>
+      <div class="settings-actions"><button class="primary-btn" data-action="new-shift">Начать новую пустую смену</button><button class="danger-btn" data-action="reset">Вернуть демонстрационные данные</button></div>
+    </section>
     <details class="about-panel">
       <summary><div><b>О MedFlow</b><span>для кого и зачем создан прототип</span></div><i class="toggle-chevron" aria-hidden="true"></i></summary>
       <div class="about-content">
@@ -923,7 +930,7 @@ globalThis.__MEDFLOW_TEST__={
   actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,normalizeStep,typeLabel,
   syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
-  captureViewPosition,restoreViewPosition,historyStepView,shiftCardView,inferShiftStart
+  captureViewPosition,restoreViewPosition,historyStepView,shiftCardView,inferShiftStart,historyView,settingsView,topbarView
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 render();
