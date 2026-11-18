@@ -48,12 +48,18 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .shift-progress summary b { flex:0 0 auto; color:#d7dfe0; font-size:14px; font-variant-numeric:tabular-nums; }
 .shift-progress summary .toggle-chevron { flex:0 0 auto; }
 .shift-progress[open] summary .toggle-chevron,.about-panel[open] summary .toggle-chevron { transform:rotate(225deg); margin-top:4px; }
-.progress-track { flex:1; min-width:60px; height:3px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.06); }
-.progress-track i { display:block; height:100%; border-radius:inherit; background:#a9bab9; box-shadow:0 0 8px rgba(224,236,235,.12); transition:width .2s ease; }
-.progress-breakdown { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; padding:3px 9px 8px; }
+.progress-track { flex:1; display:flex; min-width:60px; height:4px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.06); }
+.progress-track .progress-segment { display:block; height:100%; border-radius:0; transition:width .2s ease; }
+.progress-track .progress-segment.done { background:var(--ok); }
+.progress-track .progress-segment.running { background:var(--warning); }
+.progress-track .progress-segment.stopped { background:var(--danger); }
+.progress-breakdown { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:5px; padding:3px 9px 8px; }
 .progress-breakdown > div { min-width:0; padding:7px 6px; border-radius:9px; background:rgba(0,0,0,.16); }
 .progress-breakdown b,.progress-breakdown span { display:block; }
 .progress-breakdown b { font-size:13px; font-variant-numeric:tabular-nums; }
+.progress-breakdown .done b { color:var(--ok); }
+.progress-breakdown .running b { color:var(--warning); }
+.progress-breakdown .stopped b { color:var(--danger); }
 .progress-breakdown span { color:var(--muted); font-size:8px; margin-top:2px; line-height:1.2; }
 .shift-progress > p { color:var(--muted); font-size:9px; line-height:1.35; padding:0 11px 10px; }
 .shift-summary { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:14px; padding:6px; background:rgba(14,18,23,.48); border:1px solid rgba(222,232,235,.075); border-radius:14px; }

@@ -88,13 +88,15 @@ function directionOptions(selected='', includeSystem=false) {
   const items = includeSystem ? [...getDirections(), ...SYSTEM_STEPS] : getDirections();
   return items.map(item => `<option value="${esc(item.id)}" ${item.id===selected?'selected':''}>${esc(item.label)}</option>`).join('');
 }
-function currentStep(patient) { return patient.steps.find(s => !['done','cancelled'].includes(s.state)); }
-function isComplete(patient) { return patient.steps.every(s => ['done','cancelled'].includes(s.state)); }
+function isStoppedStep(step) { return ['cancelled','postponed'].includes(step?.state); }
+function isTerminalStep(step) { return step?.state === 'done' || isStoppedStep(step); }
+function currentStep(patient) { return patient.steps.find(step => !isTerminalStep(step)); }
+function isComplete(patient) { return patient.steps.every(isTerminalStep); }
 function isOperationStep(step) {
   return Boolean(step && (step.type === 'operation' || /операц|оперблок|операцион/i.test(step.title || '')));
 }
 function hasTodayOperation(patient) {
-  return Boolean(patient?.steps?.some(step => step.state !== 'cancelled' && isOperationStep(step)));
+  return Boolean(patient?.steps?.some(step => !isStoppedStep(step) && isOperationStep(step)));
 }
 function syncPatientPriority(patient, urgent=false) {
   const hasOperation = hasTodayOperation(patient);
@@ -118,7 +120,7 @@ function parseTime(value) {
   return hours < 24 && minutes < 60 ? hours * 60 + minutes : null;
 }
 function patientTimeMinutes(patient) {
-  const pending = patient.steps.filter(step => !['done','cancelled'].includes(step.state));
+  const pending = patient.steps.filter(step => !isTerminalStep(step));
   const source = pending.length ? pending : patient.steps.filter(step => step.state === 'done');
   const times = source.map(step => parseTime(step.time)).filter(value => value !== null);
   return times.length ? Math.min(...times) : null;
@@ -160,10 +162,12 @@ function fmtDuration(ms) {
 }
 function timerClass(ms) { const m = ms/60000; return m < 60 ? 'green' : m < 120 ? 'yellow' : 'red'; }
 function shiftProgress(patients) {
-  const counted = patients.filter(patient => patient.steps.some(step => step.state !== 'cancelled'));
-  const taskSteps = counted.flatMap(patient => patient.steps).filter(step => step.state !== 'cancelled');
+  const counted = patients.filter(patient => patient.steps.length > 0);
+  const taskSteps = counted.flatMap(patient => patient.steps);
   const taskDone = taskSteps.filter(step => step.state === 'done').length;
-  const taskActive = taskSteps.filter(step => ['in_progress','in_or','pickup'].includes(step.state)).length;
+  const taskRunning = taskSteps.filter(step => ['in_progress','in_or','pickup'].includes(step.state)).length;
+  const taskStopped = taskSteps.filter(isStoppedStep).length;
+  const taskWaiting = Math.max(0, taskSteps.length - taskDone - taskRunning - taskStopped);
   return {
     patients: {
       done: counted.filter(isComplete).length,
@@ -172,8 +176,11 @@ function shiftProgress(patients) {
     tasks: {
       done: taskDone,
       total: taskSteps.length,
-      active: taskActive,
-      remaining: Math.max(0, taskSteps.length - taskDone)
+      active: taskRunning,
+      cancelled: taskStopped,
+      waiting: taskWaiting,
+      handled: taskDone + taskStopped,
+      remaining: taskRunning + taskWaiting
     }
   };
 }
@@ -220,20 +227,25 @@ function topbarView() {
     return `<header class="topbar section-topbar"><h1>${view==='directions'?'Направления':'История'}</h1><button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button></header>`;
   }
   const progress = shiftProgress(state.patients);
-  const patientPercent = progress.patients.total ? Math.round(progress.patients.done / progress.patients.total * 100) : 0;
+  const taskPercent = value => progress.tasks.total ? (value / progress.tasks.total * 100).toFixed(2) : 0;
   const patientCount = progress.patients.total ? `${progress.patients.done}/${progress.patients.total}` : '0';
   return `<header class="topbar today-topbar">
     <details class="shift-progress">
       <summary aria-label="Завершено маршрутов пациентов: ${progress.patients.done} из ${progress.patients.total}">
-        <span class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${Math.max(1,progress.patients.total)}" aria-valuenow="${progress.patients.done}"><i style="width:${patientPercent}%"></i></span>
+        <span class="progress-track" role="img" aria-label="Задачи: выполнено ${progress.tasks.done}, выполняется ${progress.tasks.active}, отменено или перенесено ${progress.tasks.cancelled}, ожидает ${progress.tasks.waiting}">
+          <i class="progress-segment done" style="width:${taskPercent(progress.tasks.done)}%"></i>
+          <i class="progress-segment running" style="width:${taskPercent(progress.tasks.active)}%"></i>
+          <i class="progress-segment stopped" style="width:${taskPercent(progress.tasks.cancelled)}%"></i>
+        </span>
         <b>${patientCount}</b><i class="toggle-chevron" aria-hidden="true"></i>
       </summary>
       <div class="progress-breakdown">
-        <div><b>${progress.tasks.done}/${progress.tasks.total}</b><span>задач выполнено</span></div>
-        <div><b>${progress.tasks.active}</b><span>сейчас в работе</span></div>
-        <div><b>${progress.tasks.remaining}</b><span>осталось задач</span></div>
+        <div class="done"><b>${progress.tasks.done}</b><span>выполнено</span></div>
+        <div class="running"><b>${progress.tasks.active}</b><span>выполняется</span></div>
+        <div class="stopped"><b>${progress.tasks.cancelled}</b><span>отмена / перенос</span></div>
+        <div><b>${progress.tasks.waiting}</b><span>ожидает</span></div>
       </div>
-      <p>По текущему плану. Один пациент может иметь несколько задач.</p>
+      <p>Счётчик — пациенты, полоска — задачи. Удалённые ошибки не учитываются.</p>
     </details>
     <button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>
   </header>`;
@@ -265,15 +277,15 @@ function todayView(active, completed, ops, inOr) {
 function directionsView() {
   const dirs = [{id:'all',label:'Все'}, ...getDirections(), {id:'other',label:'Другое'}];
   const patients = state.patients.filter(p => p.steps.some(s=>stepMatchesDirection(s,direction)));
-  const waiting = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && !['done','cancelled'].includes(s.state))));
-  const done = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && s.state==='done')));
+  const waiting = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && !isTerminalStep(s))));
+  const done = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && isTerminalStep(s))));
   return `
     <div class="section-head directions-head"><div><h2>По направлениям</h2><span>операции, процедуры и другое</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     <div class="filters">${dirs.map(d=>`<button class="chip ${direction===d.id?'active':''}" data-direction="${esc(d.id)}">${esc(d.label)}</button>`).join('')}</div>
     <div class="section-head"><h2>Ожидают</h2><span>${waiting.length}</span></div>
     <div class="patient-list">${waiting.map(compactPatientCard).join('') || '<div class="empty">Никого не ожидает</div>'}</div>
-    <div class="section-head"><h2>Прошли сегодня</h2><span>${done.length}</span></div>
-    <div class="patient-list">${done.map(compactPatientCard).join('') || '<div class="empty">Пока нет выполненных</div>'}</div>
+    <div class="section-head"><h2>Обработано сегодня</h2><span>${done.length}</span></div>
+    <div class="patient-list">${done.map(compactPatientCard).join('') || '<div class="empty">Пока ничего не обработано</div>'}</div>
   `;
 }
 
@@ -308,7 +320,7 @@ function compactPatientCard(p) {
   const elapsed = orStep?.startedAt ? Date.now() - orStep.startedAt : 0;
   const currentIndex = step ? p.steps.indexOf(step) : -1;
   const upcoming = currentIndex >= 0
-    ? p.steps.slice(currentIndex + 1).filter(s => !['done','cancelled'].includes(s.state)).slice(0, 2)
+    ? p.steps.slice(currentIndex + 1).filter(s => !isTerminalStep(s)).slice(0, 2)
     : [];
   const compactTitle = step?.state === 'in_progress' ? step.title : step ? stepTitle(step) : 'Маршрут завершён';
   return `<article class="patient-card compact-card ${urgent?'urgent':''}">
@@ -570,10 +582,10 @@ function handleAction(action, el, e) {
   if (action==='route-save') {
     const p=state.patients.find(p=>p.id===el.dataset.patient);
     p.steps=modal.steps;
-    if(!p.steps.some(s=>!['done','cancelled'].includes(s.state))) {
+    if(!p.steps.length) {
       p.steps.push({id:uid(),type:'other',title:'Новый этап',state:'active'});
     }
-    const pending=p.steps.filter(s=>!['done','cancelled'].includes(s.state));
+    const pending=p.steps.filter(s=>!isTerminalStep(s));
     if(pending.length && !pending.some(s=>s.state!=='waiting')) pending[0].state='active';
     syncPatientPriority(p,p.priority==='urgent');
     log(p,'Маршрут изменён'); modal={type:'details',patient:p.id}; save(); return render();
@@ -630,7 +642,7 @@ function handleAction(action, el, e) {
   if (['cancel-step','postpone-step','handoff'].includes(action)) {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
     const text=action==='cancel-step'?`Отменено: ${s.title}`:action==='postpone-step'?`Перенесено: ${s.title}`:`Передано другому сотруднику: ${s.title}`;
-    s.state=action==='handoff'?'done':'cancelled'; log(p,text); activateNext(p);
+    s.state=action==='handoff'?'done':action==='postpone-step'?'postponed':'cancelled'; log(p,text); activateNext(p);
     syncPatientPriority(p,Boolean(currentStep(p)?.urgent)); modal=null; save(); return render();
   }
   if (action==='delete-patient') { modal={type:'confirm-delete',patient:el.dataset.patient}; return render(); }
@@ -645,6 +657,6 @@ function handleAction(action, el, e) {
   if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=clone(seed); modal=null; view='today'; save(); return render(); }
 }
 
-globalThis.__MEDFLOW_TEST__={currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients};
+globalThis.__MEDFLOW_TEST__={isStoppedStep,isTerminalStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,typeLabel,syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients};
 setInterval(()=>{ if(document.querySelector('.timer')) render(); },30000);
 render();

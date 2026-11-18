@@ -180,25 +180,61 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 {
   const progress = api.shiftProgress([{ steps:[
     step('ЭКГ','done','ecg'),
+    step('КТ','in_progress','ct'),
     step('Операция','in_or','operation'),
-    step('Рентген','cancelled','xray')
+    step('Забрать','pickup','operation'),
+    step('Рентген','cancelled','xray'),
+    step('УЗИ','postponed','ultrasound'),
+    step('Эхо','active','echo'),
+    step('МРТ','waiting','mri')
   ] }]);
   assert.equal(progress.patients.done, 0);
   assert.equal(progress.patients.total, 1);
   assert.equal(progress.tasks.done, 1);
-  assert.equal(progress.tasks.total, 2);
-  assert.equal(progress.tasks.active, 1);
-  assert.equal(progress.tasks.remaining, 1);
+  assert.equal(progress.tasks.total, 8);
+  assert.equal(progress.tasks.active, 3);
+  assert.equal(progress.tasks.cancelled, 2);
+  assert.equal(progress.tasks.waiting, 2);
+  assert.equal(progress.tasks.handled, 3);
+  assert.equal(progress.tasks.remaining, 5);
+
   const cancelledOnly = api.shiftProgress([{ steps:[step('КТ','cancelled','ct')] }]);
-  assert.equal(cancelledOnly.patients.total, 0);
-  assert.equal(cancelledOnly.tasks.total, 0);
+  assert.equal(cancelledOnly.patients.done, 1);
+  assert.equal(cancelledOnly.patients.total, 1);
+  assert.equal(cancelledOnly.tasks.total, 1);
+  assert.equal(cancelledOnly.tasks.cancelled, 1);
+
+  const postponedOnly = api.shiftProgress([{ steps:[step('Операция','postponed','operation')] }]);
+  assert.equal(postponedOnly.patients.done, 1);
+  assert.equal(postponedOnly.patients.total, 1);
+  assert.equal(postponedOnly.tasks.cancelled, 1);
+
+  const removed = api.shiftProgress([{ steps:[] }]);
+  assert.equal(removed.patients.total, 0);
+  assert.equal(removed.tasks.total, 0);
+}
+
+{
+  const patient = { steps:[
+    step('Операция','postponed','operation'),
+    step('ЭКГ','active','ecg')
+  ] };
+  assert.equal(api.isStoppedStep(patient.steps[0]), true);
+  assert.equal(api.isTerminalStep(patient.steps[0]), true);
+  assert.equal(api.currentStep(patient).title, 'ЭКГ');
+  assert.equal(api.hasTodayOperation(patient), false);
+  assert.equal(api.isComplete({steps:[step('КТ','done','ct'),step('УЗИ','postponed','ultrasound')]}), true);
 }
 
 {
   assert.ok(appRoot.innerHTML.includes('class="shift-progress"'));
+  assert.ok(appRoot.innerHTML.includes('progress-segment done'));
+  assert.ok(appRoot.innerHTML.includes('progress-segment running'));
+  assert.ok(appRoot.innerHTML.includes('progress-segment stopped'));
+  assert.ok(appRoot.innerHTML.includes('Удалённые ошибки не учитываются'));
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
 }
 
-console.log('MedFlow: 20 сценариев пройдены');
+console.log('MedFlow: 22 сценария пройдены');
