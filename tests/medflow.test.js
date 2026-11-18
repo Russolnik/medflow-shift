@@ -357,6 +357,18 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
+  const historyHtml = api.historyView();
+  const settingsHtml = api.settingsView();
+  assert.ok(historyHtml.includes('Прошлые смены'));
+  assert.ok(!historyHtml.includes('Настройки интерфейса'));
+  assert.ok(!historyHtml.includes('Управление сменой'));
+  assert.ok(!historyHtml.includes('О MedFlow'));
+  assert.ok(settingsHtml.includes('Быстрая запись'));
+  assert.ok(settingsHtml.includes('Смена и данные'));
+  assert.ok(settingsHtml.includes('О MedFlow'));
+}
+
+{
   assert.ok(appRoot.innerHTML.includes('class="shift-progress"'));
   assert.ok(appRoot.innerHTML.includes('progress-segment done'));
   assert.ok(appRoot.innerHTML.includes('progress-segment running'));
@@ -364,6 +376,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(appRoot.innerHTML.includes('Удалённые ошибки не учитываются'));
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
   assert.ok(appRoot.innerHTML.includes('class="fab"'));
+  assert.ok(appRoot.innerHTML.includes('data-view="settings"'));
+  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 4);
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
 }
