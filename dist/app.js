@@ -24,7 +24,11 @@ const SYSTEM_STEPS = [
   { id: 'other', label: 'Другое' }
 ];
 
-const SORT_MODES = ['priority', 'time-asc', 'time-desc'];
+const DEFAULT_DEPARTMENTS = [
+  { id: 'department-own', label: 'Наше отделение' }
+];
+
+const SORT_MODES = ['priority', 'department', 'time-asc', 'time-desc'];
 const ADD_BUTTON_POSITIONS = ['floating', 'inline'];
 const DOCUMENT_STATUSES = ['taken', 'not_required'];
 
@@ -41,11 +45,11 @@ function clone(value) {
 }
 
 const seed = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   shiftStartedAt: Date.now(),
   patients: [
     {
-      id: uid(), surname: 'Иванов', room: '6', block: 'xo', transport: 'Кресло', priority: 'operation', pinned: false,
+      id: uid(), surname: 'Иванов', room: '6', departmentId: 'department-own', block: 'xo', transport: 'Кресло', priority: 'operation', pinned: false,
       steps: [
         { id: uid(), type: 'ecg', title: 'ЭКГ', state: 'done' },
         { id: uid(), type: 'xray', title: 'Рентген', state: 'active' },
@@ -53,25 +57,27 @@ const seed = {
       ], note: 'Рентген по пути к оперблоку', events: []
     },
     {
-      id: uid(), surname: 'Петрова', room: '12', block: 'angio', transport: 'Каталка', priority: 'operation', pinned: false,
+      id: uid(), surname: 'Петрова', room: '12', departmentId: 'department-own', block: 'angio', transport: 'Каталка', priority: 'operation', pinned: false,
       steps: [
         { id: uid(), type: 'operation', title: 'Операция', state: 'in_or', startedAt: Date.now() - 76 * 60000 }
       ], note: '', events: []
     },
     {
-      id: uid(), surname: 'Смирнов', room: '3', block: '', transport: 'Пешком', priority: 'urgent', pinned: false,
+      id: uid(), surname: 'Смирнов', room: '3', departmentId: 'department-own', block: '', transport: 'Пешком', priority: 'urgent', pinned: false,
       steps: [{ id: uid(), type: 'ct', title: 'Срочное КТ', state: 'active', urgent: true }],
       note: 'Уточнить сопровождение на посту', events: []
     }
   ],
   archive: [],
   directions: clone(DEFAULT_DIRECTIONS),
-  settings: { sortMode: 'priority', addButtonPosition: 'floating' }
+  departments: clone(DEFAULT_DEPARTMENTS),
+  settings: { sortMode: 'priority', addButtonPosition: 'floating', ownDepartmentId: 'department-own' }
 };
 
 let state = load();
 let view = 'today';
 let direction = 'all';
+let departmentFilter = 'all';
 let modal = null;
 let showCompleted = false;
 let localUpdatedAt = Number(localStorage.getItem(SYNC_META_KEY)) || 0;
@@ -297,7 +303,8 @@ function mergeStates(localState,remoteState) {
   const patientIds=[...new Set([...localPatients.keys(),...remotePatients.keys()])];
   const archives=[...(remote.archive||[]),...(local.archive||[])].filter((shift,index,all)=>index===all.findIndex(item=>item.id===shift.id));
   const directions=[...(local.directions||[]),...(remote.directions||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
-  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),archive:archives,directions});
+  const departments=[...(local.departments||[]),...(remote.departments||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
+  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),archive:archives,directions,departments});
 }
 function backupEnvelope() {
   return {format:'medflow-backup',version:1,exportedAt:new Date().toISOString(),state:clone(state)};
@@ -347,6 +354,7 @@ function normalizePatient(patient) {
   if (!patient || typeof patient !== 'object') return null;
   patient.steps = Array.isArray(patient.steps) ? patient.steps.map(normalizeStep).filter(Boolean) : [];
   patient.events = Array.isArray(patient.events) ? patient.events : [];
+  patient.departmentId = String(patient.departmentId || '');
   return patient;
 }
 function inferShiftStart(patients) {
@@ -359,7 +367,7 @@ function inferShiftStart(patients) {
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
   const incomingVersion = Number(next.schemaVersion) || 1;
-  next.schemaVersion = 3;
+  next.schemaVersion = 4;
   next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
   next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
   next.archive = Array.isArray(next.archive) ? next.archive.filter(shift => shift && typeof shift === 'object') : [];
@@ -371,6 +379,17 @@ function normalizeState(value) {
   next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
   if (!SORT_MODES.includes(next.settings.sortMode)) next.settings.sortMode = 'priority';
   if (!ADD_BUTTON_POSITIONS.includes(next.settings.addButtonPosition)) next.settings.addButtonPosition = 'floating';
+  if (!Array.isArray(next.departments)) next.departments = clone(DEFAULT_DEPARTMENTS);
+  const departmentIds = new Set();
+  next.departments = next.departments
+    .filter(item => item && String(item.label || '').trim())
+    .map(item => ({ id: String(item.id || `department-${uid()}`), label: String(item.label).trim() }))
+    .filter(item => !departmentIds.has(item.id) && departmentIds.add(item.id));
+  if (!next.departments.length) next.departments = clone(DEFAULT_DEPARTMENTS);
+  if (!next.departments.some(item => item.id === next.settings.ownDepartmentId)) next.settings.ownDepartmentId = next.departments[0].id;
+  const validDepartmentIds = new Set(next.departments.map(item => item.id));
+  next.patients.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; });
+  next.archive.forEach(shift => shift.patients.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; }));
   if (!Array.isArray(next.directions)) next.directions = clone(DEFAULT_DIRECTIONS);
   next.directions = next.directions
     .filter(item => item && item.id && String(item.label || '').trim())
@@ -380,6 +399,16 @@ function normalizeState(value) {
   return next;
 }
 function getDirections() { return state.directions || DEFAULT_DIRECTIONS; }
+function getDepartments() { return state.departments || DEFAULT_DEPARTMENTS; }
+function ownDepartmentId() { return state.settings?.ownDepartmentId || getDepartments()[0]?.id || ''; }
+function departmentLabel(id) { return getDepartments().find(item => item.id === id)?.label || 'Не указано'; }
+function isOwnDepartment(patient) { return Boolean(patient?.departmentId && patient.departmentId === ownDepartmentId()); }
+function departmentOptions(selected='', includeUnknown=true) {
+  return `${includeUnknown ? `<option value="" ${!selected?'selected':''}>Не указано</option>` : ''}${getDepartments().map(item => `<option value="${esc(item.id)}" ${item.id===selected?'selected':''}>${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</option>`).join('')}`;
+}
+function patientMatchesDepartment(patient, selected=departmentFilter) {
+  return selected === 'all' || (selected === 'none' ? !patient.departmentId : patient.departmentId === selected);
+}
 function directionOptions(selected='', includeSystem=false) {
   const items = includeSystem ? [...getDirections(), ...SYSTEM_STEPS] : getDirections();
   return items.map(item => `<option value="${esc(item.id)}" ${item.id===selected?'selected':''}>${esc(item.label)}</option>`).join('');
@@ -427,6 +456,10 @@ function comparePatients(a, b, mode=state.settings.sortMode) {
   const fixedPriority = patient => patient.pinned ? 3 : (currentStep(patient)?.urgent || patient.priority === 'urgent') ? 2 : hasTodayOperation(patient) ? 1 : 0;
   const priorityDifference = fixedPriority(b) - fixedPriority(a);
   if (priorityDifference) return priorityDifference;
+  if (mode === 'department') {
+    const departmentDifference = departmentLabel(a.departmentId).localeCompare(departmentLabel(b.departmentId), 'ru');
+    return departmentDifference || score(b) - score(a);
+  }
   const aTime = patientTimeMinutes(a), bTime = patientTimeMinutes(b);
   if (aTime === null && bTime === null) return score(b) - score(a);
   if (aTime === null) return 1;
@@ -440,6 +473,7 @@ function sortPatients(patients, mode=state.settings.sortMode) {
 function sortControl(compact=false) {
   return `<div class="sort-control ${compact?'compact-sort':''}">${compact?'':'<label for="sort-mode">Сортировка</label>'}<select id="sort-mode" data-sort-mode aria-label="Сортировка очереди">
     <option value="priority" ${state.settings.sortMode==='priority'?'selected':''}>${compact?'Приоритет':'По приоритету'}</option>
+    <option value="department" ${state.settings.sortMode==='department'?'selected':''}>${compact?'Отделение':'По отделению'}</option>
     <option value="time-asc" ${state.settings.sortMode==='time-asc'?'selected':''}>${compact?'Время ↑':'По времени: сначала ранние'}</option>
     <option value="time-desc" ${state.settings.sortMode==='time-desc'?'selected':''}>${compact?'Время ↓':'По времени: сначала поздние'}</option>
   </select></div>`;
@@ -597,13 +631,11 @@ function render(preservePosition=false) {
   const position = preservePosition ? captureViewPosition() : null;
   const active = sortPatients(state.patients.filter(p => !isComplete(p)));
   const completed = sortPatients(state.patients.filter(isComplete));
-  const ops = state.patients.filter(hasTodayOperation).length;
-  const inOr = state.patients.filter(p => p.steps.some(s => ['in_or','pickup'].includes(s.state))).length;
   document.getElementById('app').innerHTML = `
     <main class="shell">
       ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
-      ${view === 'today' ? todayView(active, completed, ops, inOr) : view === 'directions' ? directionsView() : view === 'history' ? historyView() : settingsView()}
+      ${view === 'today' ? todayView(active, completed) : view === 'directions' ? directionsView() : view === 'history' ? historyView() : settingsView()}
     </main>
     ${showFloatingAdd() ? '<button class="fab" data-action="add" aria-label="Записать пациента">＋</button>' : ''}
     <nav class="nav">
@@ -658,11 +690,20 @@ function syncPillView() {
   const time=savedAt ? ` · ${fmtClock(savedAt)}` : '';
   return `<button class="sync-pill ${esc(status)}" data-action="cloud-status" title="${esc(cloud.message||cloudStatusLabel())}"><i aria-hidden="true"></i><span>${labels[status]||'Облако'}${time}</span></button>`;
 }
-function todayView(active, completed, ops, inOr) {
-  const engagedPatients = active.filter(p => p.steps.some(s => ['in_progress','in_or','pickup'].includes(s.state)));
-  const queuedPatients = active.filter(p => !engagedPatients.includes(p));
+function departmentFiltersView() {
+  const filters = [{id:'all',label:'Все'}, ...getDepartments(), {id:'none',label:'Не указано'}];
+  return `<div class="department-filter-wrap"><span>Отделение</span><div class="filters department-filters">${filters.map(item=>`<button class="chip ${departmentFilter===item.id?'active':''}" data-department-filter="${esc(item.id)}">${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</button>`).join('')}</div></div>`;
+}
+function todayView(active, completed) {
+  const visibleActive = active.filter(patient => patientMatchesDepartment(patient));
+  const visibleCompleted = completed.filter(patient => patientMatchesDepartment(patient));
+  const ops = [...visibleActive, ...visibleCompleted].filter(hasTodayOperation).length;
+  const inOr = visibleActive.filter(p => p.steps.some(s => ['in_or','pickup'].includes(s.state))).length;
+  const engagedPatients = visibleActive.filter(p => p.steps.some(s => ['in_progress','in_or','pickup'].includes(s.state)));
+  const queuedPatients = visibleActive.filter(p => !engagedPatients.includes(p));
   const engaged = engagedPatients.length;
   return `
+    ${departmentFiltersView()}
     ${engagedPatients.length ? `
       <div class="section-head workstream-head"><h2>Сейчас вне палаты</h2><span>${engaged} задействовано</span></div>
       <div class="patient-list">${engagedPatients.map(compactPatientCard).join('')}</div>
@@ -676,20 +717,21 @@ function todayView(active, completed, ops, inOr) {
     </section>
     <button class="completed-toggle" data-action="toggle-completed" aria-expanded="${showCompleted}">
       <span>Выполнено сегодня</span>
-      <strong><span>${completed.length}</span><i class="toggle-chevron ${showCompleted ? 'open' : ''}" aria-hidden="true"></i></strong>
+      <strong><span>${visibleCompleted.length}</span><i class="toggle-chevron ${showCompleted ? 'open' : ''}" aria-hidden="true"></i></strong>
     </button>
-    ${showCompleted ? `<div class="patient-list" style="margin-top:10px">${completed.map(compactPatientCard).join('') || '<div class="empty">Пока ничего</div>'}</div>` : ''}
+    ${showCompleted ? `<div class="patient-list" style="margin-top:10px">${visibleCompleted.map(compactPatientCard).join('') || '<div class="empty">Пока ничего</div>'}</div>` : ''}
   `;
 }
 
 function directionsView() {
   const dirs = [{id:'all',label:'Все'}, ...getDirections(), {id:'other',label:'Другое'}];
-  const patients = state.patients.filter(p => p.steps.some(s=>stepMatchesDirection(s,direction)));
+  const patients = state.patients.filter(p => patientMatchesDepartment(p) && p.steps.some(s=>stepMatchesDirection(s,direction)));
   const waiting = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && !isTerminalStep(s))));
   const done = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && isTerminalStep(s))));
   return `
     <div class="section-head directions-head"><div><h2>По направлениям</h2><span>операции, процедуры и другое</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     <div class="filters">${dirs.map(d=>`<button class="chip ${direction===d.id?'active':''}" data-direction="${esc(d.id)}">${esc(d.label)}</button>`).join('')}</div>
+    ${departmentFiltersView()}
     <div class="section-head"><h2>Ожидают</h2><span>${waiting.length}</span></div>
     <div class="patient-list">${waiting.map(compactPatientCard).join('') || '<div class="empty">Никого не ожидает</div>'}</div>
     <div class="section-head"><h2>Обработано сегодня</h2><span>${done.length}</span></div>
@@ -788,6 +830,11 @@ function settingsView() {
   return `
     ${cloudSettingsView()}
     <section class="settings-card">
+      <div class="settings-card-head"><h2>Отделения</h2><span>${getDepartments().length} в списке</span></div>
+      <p>Наше отделение: <b>${esc(departmentLabel(ownDepartmentId()))}</b>. Оно выбирается по умолчанию для новых пациентов.</p>
+      <button class="secondary-btn" data-action="manage-departments">Настроить отделения</button>
+    </section>
+    <section class="settings-card">
       <div class="settings-card-head"><h2>Резервная копия</h2><span>файл на телефоне или ПК</span></div>
       <p>Скачай всю текущую смену, историю и настройки. Файл можно восстановить на этом или другом устройстве.</p>
       <div class="settings-actions backup-actions"><button class="primary-btn" data-action="export-backup">Скачать смену</button><button class="secondary-btn" data-action="import-backup">Восстановить из файла</button></div>
@@ -831,7 +878,7 @@ function compactPatientCard(p) {
   return `<article class="patient-card compact-card ${urgent?'urgent':''}">
     <div class="compact-head">
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
-      <div class="badges">${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
+      <div class="badges">${p.departmentId?`<span class="badge department ${isOwnDepartment(p)?'own':''}" title="${esc(departmentLabel(p.departmentId))}">${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · НАШЕ':''}</span>`:''}${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
     </div>
     <div class="compact-body">
       <div class="compact-copy">
@@ -955,7 +1002,7 @@ function modalView() {
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <div class="row between"><div><h2>${esc(p.surname)} · палата ${esc(p.room || 'уточнить')}</h2><p class="modal-sub">Полная карточка пациента</p></div>${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:''}</div>
       <div class="detail-block"><div class="current-label">Маршрут на сегодня</div><div class="route-detail">${p.steps.map((s,i)=>`<div class="route-detail-item ${s.state==='done'?'done':s===currentStep(p)?'active':''}"><span>${s.state==='done'?'✓':i+1}</span><b>${esc(s.title)}${s.time?` <small>· ${esc(s.time)}</small>`:''}</b></div>`).join('')}</div></div>
-      <div class="detail-grid"><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
+      <div class="detail-grid"><div><span>Отделение</span><b>${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · наше':''}</b></div><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
       ${p.note?`<div class="note">${esc(p.note)}</div>`:''}
       <div class="patient-list detail-actions">
         <button class="secondary-btn" data-action="edit-patient" data-patient="${p.id}">Редактировать данные</button>
@@ -979,6 +1026,7 @@ function modalView() {
       <form id="edit-patient-form" class="form-grid">
         <div class="field"><label>Фамилия</label><input required name="surname" value="${esc(p.surname)}" /></div>
         <div class="field"><label>Палата</label><input name="room" value="${esc(p.room || '')}" placeholder="Можно уточнить позже" /></div>
+        <div class="field"><label>Отделение</label><select name="department">${departmentOptions(p.departmentId)}</select></div>
         <div class="field"><label>Передвижение</label><select name="transport">
           ${['','Пешком с сопровождением','Кресло','Каталка'].map(x=>`<option value="${x}" ${p.transport===x?'selected':''}>${x||'Уточнить позже'}</option>`).join('')}
         </select></div>
@@ -1001,6 +1049,15 @@ function modalView() {
       <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="direction-save">Сохранить</button></div>
     </section></div>`;
   }
+  if (modal.type === 'departments') {
+    return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
+      <h2>Отделения</h2><p class="modal-sub">Отметь своё отделение — оно будет выбрано у новых пациентов. Остальные можно добавлять, переименовывать и удалять.</p>
+      <div class="department-catalog">${modal.departments.map((item,i)=>`<div class="department-catalog-item"><label class="own-department-choice"><input type="radio" name="own-department" data-department-own="${esc(item.id)}" ${item.id===modal.ownDepartmentId?'checked':''}><span>Наше</span></label><input data-department-name="${esc(item.id)}" value="${esc(item.label)}" aria-label="Название отделения"><button class="direction-remove" data-action="department-remove" data-index="${i}" ${modal.departments.length===1?'disabled title="Должно остаться хотя бы одно отделение"':'title="Убрать из списка"'}>×</button></div>`).join('')}</div>
+      ${modal.error?`<p class="form-error">${esc(modal.error)}</p>`:''}
+      <div class="direction-new"><input id="department-new-name" placeholder="Например, Урология" /><button class="secondary-btn" data-action="department-add">＋ Добавить</button></div>
+      <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="department-save">Сохранить</button></div>
+    </section></div>`;
+  }
   if (modal.type === 'route') {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
@@ -1016,6 +1073,7 @@ function modalView() {
       <form id="quick-form" class="quick-form">
         <div class="field"><label>Фамилия</label><input required name="surname" placeholder="Иванов" autofocus /></div>
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно позже" /></div>
+        <div class="field"><label>Отделение</label><select name="department">${departmentOptions(ownDepartmentId())}</select></div>
         <div class="field"><label>Что сейчас</label><select name="type">${directionOptions('', true)}</select></div>
         <div class="field"><label>Уточнение</label><input name="title" placeholder="Например, ХО или срочное КТ" /></div>
         <div class="field"><label>Время</label><input type="time" name="time" /></div>
@@ -1032,6 +1090,7 @@ function modalView() {
         <input type="hidden" name="urgent" value="${urgent?'1':'0'}" />
         <div class="field"><label>Фамилия / условное имя</label><input required name="surname" placeholder="Например, Иванов" autofocus /></div>
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно уточнить позже" /></div>
+        <div class="field"><label>Отделение</label><select name="department">${departmentOptions(ownDepartmentId())}</select></div>
         <div class="field"><label>Ближайшее действие</label><select name="type">${directionOptions('', true)}</select></div>
         <div class="field"><label>Куда везти</label><input required name="destination" placeholder="ХО, КТ, кабинет…" /></div>
         <div class="field"><label>Время ближайшего действия</label><input type="time" name="time" /></div>
@@ -1082,11 +1141,14 @@ function modalView() {
 function bind() {
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view; render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
+  document.querySelectorAll('[data-department-filter]').forEach(el=>el.onclick=()=>{departmentFilter=el.dataset.departmentFilter; render(true);});
   document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(true); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
   document.querySelectorAll('[data-route-type]').forEach(el=>el.onchange=()=>{ const index=Number(el.dataset.routeType),step=modal?.type==='route'?modal.steps[index]:null;if(changeRouteStepType(step,el.value)){const title=document.querySelector(`[data-route-title="${index}"]`);if(title)title.value=step.title;} });
   document.querySelectorAll('[data-direction-name]').forEach(el=>el.oninput=()=>{ const item=modal?.directions?.find(item=>item.id===el.dataset.directionName); if(item) item.label=el.value; });
+  document.querySelectorAll('[data-department-name]').forEach(el=>el.oninput=()=>{ const item=modal?.departments?.find(item=>item.id===el.dataset.departmentName); if(item) item.label=el.value; });
+  document.querySelectorAll('[data-department-own]').forEach(el=>el.onchange=()=>{ if(modal?.type==='departments' && el.checked) modal.ownDepartmentId=el.dataset.departmentOwn; });
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
   const authForm=document.getElementById('cloud-auth-form');
   if(authForm) authForm.onsubmit=(e)=>{
@@ -1230,6 +1292,39 @@ async function handleAction(action, el, e) {
     });
     return;
   }
+  if (action==='manage-departments') { modal={type:'departments',departments:clone(getDepartments()),ownDepartmentId:ownDepartmentId(),error:''}; return render(); }
+  if (action==='department-remove') {
+    const index=Number(el.dataset.index);
+    if(modal?.departments?.length>1 && modal.departments[index]) {
+      const removed=modal.departments.splice(index,1)[0];
+      if(removed.id===modal.ownDepartmentId) modal.ownDepartmentId=modal.departments[0].id;
+    }
+    return render();
+  }
+  if (action==='department-add') {
+    const input=document.getElementById('department-new-name');
+    const label=input?.value.trim();
+    if(!label) { modal.error='Введи название отделения'; return render(); }
+    if(modal.departments.some(item=>item.label.trim().toLocaleLowerCase('ru-RU')===label.toLocaleLowerCase('ru-RU'))) { modal.error='Такое отделение уже есть'; return render(); }
+    modal.departments.push({id:`department-${uid()}`,label}); modal.error=''; return render();
+  }
+  if (action==='department-save') {
+    const cleaned=[];
+    const labels=new Set();
+    for(const item of modal.departments) {
+      const label=String(item.label||'').trim(), key=label.toLocaleLowerCase('ru-RU');
+      if(!label || labels.has(key)) continue;
+      labels.add(key); cleaned.push({id:item.id,label});
+    }
+    if(!cleaned.length) { modal.error='Добавь хотя бы одно отделение'; return render(); }
+    const validIds=new Set(cleaned.map(item=>item.id));
+    state.departments=cleaned;
+    state.settings.ownDepartmentId=validIds.has(modal.ownDepartmentId)?modal.ownDepartmentId:cleaned[0].id;
+    state.patients.forEach(patient=>{ if(!validIds.has(patient.departmentId)) patient.departmentId=''; });
+    state.archive.forEach(shift=>(shift.patients||[]).forEach(patient=>{ if(!validIds.has(patient.departmentId)) patient.departmentId=''; }));
+    if(departmentFilter!=='all' && departmentFilter!=='none' && !validIds.has(departmentFilter)) departmentFilter='all';
+    modal=null; save(); return render();
+  }
   if (action==='manage-directions') { modal={type:'directions',directions:clone(getDirections()),error:''}; return render(); }
   if (action==='direction-remove') {
     const item=modal?.directions?.[Number(el.dataset.index)];
@@ -1278,7 +1373,7 @@ async function handleAction(action, el, e) {
   if (action==='save-patient') {
     const form=document.getElementById('edit-patient-form'); if(!form.reportValidity()) return;
     const fd=new FormData(form), p=state.patients.find(p=>p.id===el.dataset.patient), step=currentStep(p);
-    p.surname=fd.get('surname').trim(); p.room=fd.get('room').trim(); p.transport=fd.get('transport'); p.block=fd.get('block'); p.note=fd.get('note').trim();
+    p.surname=fd.get('surname').trim(); p.room=fd.get('room').trim(); p.departmentId=String(fd.get('department')||''); p.transport=fd.get('transport'); p.block=fd.get('block'); p.note=fd.get('note').trim();
     const urgent=fd.get('urgent')==='on';
     if(step) { step.urgent=urgent; step.time=fd.get('time') || ''; step.needsClarification=!p.room||!p.transport; }
     syncPatientPriority(p,urgent);
@@ -1381,7 +1476,7 @@ async function handleAction(action, el, e) {
     const form=document.getElementById('quick-form'); if(!form.reportValidity()) return;
     const fd=new FormData(form), type=fd.get('type'), urgent=fd.get('urgent')==='on';
     const title=fd.get('title').trim() || typeLabel(type);
-    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),block:'',transport:'',priority:'normal',pinned:false,steps:[{id:uid(),type,title,time:fd.get('time')||'',state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
+    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),block:'',transport:'',priority:'normal',pinned:false,steps:[{id:uid(),type,title,time:fd.get('time')||'',state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
     state.patients.push(p); modal=null; save(); return render();
@@ -1392,7 +1487,7 @@ async function handleAction(action, el, e) {
     let types=fd.getAll('extra-direction').map(String); if(!types.includes(type))types.unshift(type);
     types=[...new Set(types)];
     const steps=types.map((t,i)=>({id:uid(),type:t,title:t===type?fd.get('destination'):typeLabel(t),time:i===0?(fd.get('time')||''):'',state:i===0?'active':'waiting',urgent:urgent&&i===0,needsClarification:!fd.get('room')||!fd.get('transport')}));
-    const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),block:fd.get('block'),transport:fd.get('transport'),priority:'normal',pinned:false,steps,note:fd.get('note'),events:[]};
+    const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),block:fd.get('block'),transport:fd.get('transport'),priority:'normal',pinned:false,steps,note:fd.get('note'),events:[]};
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня'); state.patients.push(p); modal=null; save(); return render();
   }
@@ -1423,7 +1518,8 @@ globalThis.__MEDFLOW_TEST__={
   syncPatientPriority,stepMatchesDirection,canEditRouteStep,changeRouteStepType,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,pickupTravelElapsed,operationTimersView,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
-  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView,preopChecklistView
+  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView,preopChecklistView,
+  getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 window.addEventListener('online',()=>{

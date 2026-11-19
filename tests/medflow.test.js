@@ -151,7 +151,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 3);
+  assert.equal(migrated.schemaVersion, 4);
+  assert.ok(migrated.departments.length >= 1);
+  assert.equal(migrated.settings.ownDepartmentId, migrated.departments[0].id);
   assert.ok(migrated.shiftStartedAt > 0);
   for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера','ФГС']) {
     assert.ok(migrated.directions.some(item => item.label === label));
@@ -165,6 +167,18 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   });
   assert.ok(custom.directions.some(item => item.id === 'custom-fgds' && item.label === 'ФГДС'));
   assert.equal(custom.directions.find(item => item.id === 'operation').locked, true);
+}
+
+{
+  const migrated = api.normalizeState({
+    patients:[{id:'legacy-department',surname:'Старый',steps:[],events:[]}],
+    archive:[], settings:{}
+  });
+  assert.equal(migrated.patients[0].departmentId, '');
+  assert.equal(api.patientMatchesDepartment({departmentId:''}, 'none'), true);
+  assert.equal(api.patientMatchesDepartment({departmentId:'department-own'}, 'department-own'), true);
+  assert.ok(api.departmentOptions('department-own').includes('наше'));
+  assert.ok(api.departmentFiltersView().includes('data-department-filter'));
 }
 
 {
@@ -451,12 +465,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v27"));
+  assert.ok(sw.includes("medflow-shell-v28"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=27');
+  assert.equal(manifest.start_url,'./?pwa=28');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -493,6 +507,10 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes("cloudRequest('/auth/v1/user'"));
   assert.ok(source.includes('data-route-type'));
   assert.ok(source.includes('Направление текущего этапа можно менять до начала выполнения'));
+  assert.ok(source.includes('data-action="manage-departments"'));
+  assert.ok(source.includes('data-department-filter'));
+  assert.ok(source.includes('name="department"'));
+  assert.ok(source.includes("mode === 'department'"));
 }
 
 {
