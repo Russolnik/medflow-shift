@@ -98,6 +98,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.timerClass(59 * 60000), 'green');
   assert.equal(api.timerClass(60 * 60000), 'yellow');
   assert.equal(api.timerClass(120 * 60000), 'red');
+  assert.equal(api.timerClass(89 * 60000,{warningMinutes:90,criticalMinutes:180}), 'green');
+  assert.equal(api.timerClass(90 * 60000,{warningMinutes:90,criticalMinutes:180}), 'yellow');
+  assert.equal(api.timerClass(180 * 60000,{warningMinutes:90,criticalMinutes:180}), 'red');
   assert.equal(api.esc('<script>'), '&lt;script&gt;');
 }
 
@@ -151,11 +154,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.ok(migrated.departments.length >= 1);
   assert.ok(Array.isArray(migrated.contacts));
   assert.equal(migrated.settings.ownDepartmentId, migrated.departments[0].id);
   assert.ok(migrated.shiftStartedAt > 0);
+  assert.deepEqual({...migrated.settings.waitThresholds},{warningMinutes:60,criticalMinutes:120});
   for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера','ФГС']) {
     assert.ok(migrated.directions.some(item => item.label === label));
   }
@@ -183,13 +187,25 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
-  const contact=api.normalizeContact({id:'c1',name:' Иванов И.И. ',role:'doctor',departmentId:'department-own',phone:'+7 (900) 123-45-67'});
+  const contact=api.normalizeContact({id:'c1',name:' Иванов И.И. ',role:'doctor',departmentId:'department-own',phone:'+7 (900) 123-45-67',calls:[100,200]});
   assert.equal(contact.name,'Иванов И.И.');
   assert.equal(contact.role,'doctor');
   assert.equal(api.contactRoleLabel('orderly'),'Санитар / санитарка');
   assert.equal(api.phoneHref(contact.phone),'tel:+79001234567');
+  assert.deepEqual([...contact.calls],[100,200]);
   assert.equal(api.normalizeContact({name:'   '}),null);
   assert.ok(api.contactsView().includes('Контакты отделений'));
+}
+
+{
+  const patient={surname:'Смирнов',room:'7',transport:'Кресло',departmentId:'department-own',doctorName:'Петров',steps:[step('Рентген','active','xray')]};
+  assert.equal(api.patientMatchesSearch(patient,'смир'),true);
+  assert.equal(api.patientMatchesSearch(patient,'рент'),true);
+  assert.equal(api.patientMatchesSearch(patient,'999'),false);
+  assert.equal(api.contactMatchesSearch({name:'Ординатор',phone:'123',role:'doctor',departmentId:'department-own'},'123'),true);
+  assert.deepEqual([...api.patientMissingFields(patient)],['время']);
+  const operationPatient={...patient,room:'',transport:'',block:'',steps:[step('Операция','active','operation')]};
+  assert.deepEqual([...api.patientMissingFields(operationPatient)],['палата','способ передвижения','оперблок','время']);
 }
 
 {
@@ -442,6 +458,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(!historyHtml.includes('О MedFlow'));
   assert.ok(settingsHtml.includes('Быстрая запись'));
   assert.ok(settingsHtml.includes('Смена и данные'));
+  assert.ok(settingsHtml.includes('Ожидание в оперблоке'));
+  assert.ok(settingsHtml.includes('data-action="save-thresholds"'));
   assert.ok(settingsHtml.includes('О MedFlow'));
 }
 
@@ -489,12 +507,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v31"));
+  assert.ok(sw.includes("medflow-shell-v32"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=31');
+  assert.equal(manifest.start_url,'./?pwa=32');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -542,6 +560,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes("op:'ОПРБЛК'"));
   assert.ok(source.includes("angio:'АНГБЛК'"));
   assert.ok(source.includes("hasTodayOperation(p)?'operation-today'"));
+  assert.ok(source.includes('data-action="undo-last"'));
+  assert.ok(source.includes('data-action="record-call"'));
+  assert.ok(source.includes("searchBox('patient-search'"));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
