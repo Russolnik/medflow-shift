@@ -201,7 +201,6 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .contact-copy { min-width:0; }
 .contact-name { font-size:14px; font-weight:850; }
 .contact-meta { display:flex; flex-wrap:wrap; gap:3px 9px; margin-top:5px; color:var(--muted); font-size:10px; }
-.last-call { margin-top:5px; color:#aab5b7; font-size:9px; }
 .contact-card p { margin-top:6px; color:#aeb7ba; font-size:10px; line-height:1.35; }
 .contact-actions { flex:0 0 auto; display:flex; gap:7px; }
 .call-btn,.contact-edit-btn { width:42px; min-height:42px; display:grid; place-items:center; padding:0; border-radius:12px; text-decoration:none; }
@@ -287,7 +286,6 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .history-patient-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .history-patient-head b { min-width:0; font-size:13px; }
 .history-patient-head b span,.history-patient-head small { color:var(--muted); font-size:10px; font-weight:650; }
-.history-calls { display:flex; flex-wrap:wrap; gap:5px 9px; margin:7px 0; color:#aeb9bb; font-size:9px; }
 .history-patient-head small { flex:0 0 auto; }
 .history-steps { display:grid; gap:6px; margin-top:9px; }
 .history-step { padding:9px 10px; border-left:2px solid rgba(222,232,235,.13); border-radius:0 10px 10px 0; background:rgba(255,255,255,.014); }

@@ -187,12 +187,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
-  const contact=api.normalizeContact({id:'c1',name:' Иванов И.И. ',role:'doctor',departmentId:'department-own',phone:'+7 (900) 123-45-67',calls:[100,200]});
+  const contact=api.normalizeContact({id:'c1',name:' Иванов И.И. ',role:'doctor',departmentId:'department-own',phone:'+7 (900) 123-45-67'});
   assert.equal(contact.name,'Иванов И.И.');
   assert.equal(contact.role,'doctor');
   assert.equal(api.contactRoleLabel('orderly'),'Санитар / санитарка');
   assert.equal(api.phoneHref(contact.phone),'tel:+79001234567');
-  assert.deepEqual([...contact.calls],[100,200]);
   assert.equal(api.normalizeContact({name:'   '}),null);
   assert.ok(api.contactsView().includes('Контакты отделений'));
 }
@@ -507,12 +506,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v32"));
+  assert.ok(sw.includes("medflow-shell-v33"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=32');
+  assert.equal(manifest.start_url,'./?pwa=33');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -561,7 +560,6 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes("angio:'АНГБЛК'"));
   assert.ok(source.includes("hasTodayOperation(p)?'operation-today'"));
   assert.ok(source.includes('data-action="undo-last"'));
-  assert.ok(source.includes('data-action="record-call"'));
   assert.ok(source.includes("searchBox('patient-search'"));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));

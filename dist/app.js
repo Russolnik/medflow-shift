@@ -381,8 +381,7 @@ function normalizeContact(contact) {
   if (!contact || typeof contact !== 'object') return null;
   const name=String(contact.name||'').trim();
   if(!name) return null;
-  const calls=Array.isArray(contact.calls)?contact.calls.map(validTimestamp).filter(Boolean).slice(-50):[];
-  return {id:String(contact.id||uid()),name,role:CONTACT_ROLES.some(item=>item.id===contact.role)?contact.role:'other',departmentId:String(contact.departmentId||''),phone:String(contact.phone||'').trim(),note:String(contact.note||'').trim(),calls};
+  return {id:String(contact.id||uid()),name,role:CONTACT_ROLES.some(item=>item.id===contact.role)?contact.role:'other',departmentId:String(contact.departmentId||''),phone:String(contact.phone||'').trim(),note:String(contact.note||'').trim()};
 }
 function inferShiftStart(patients) {
   const timestamps = (Array.isArray(patients) ? patients : []).flatMap(patient => [
@@ -853,8 +852,7 @@ function contactsView() {
 }
 function contactCard(contact) {
   const href=phoneHref(contact.phone);
-  const lastCall=contact.calls?.length?contact.calls[contact.calls.length-1]:null;
-  return `<article class="contact-card"><div class="contact-copy"><div class="contact-name">${esc(contact.name)}</div><div class="contact-meta"><span>${esc(contactRoleLabel(contact.role))}</span><span>${esc(departmentLabel(contact.departmentId))}${contact.departmentId===ownDepartmentId()?' · наше':''}</span>${contact.phone?`<span>${esc(contact.phone)}</span>`:''}</div>${lastCall?`<div class="last-call">Последний звонок: ${esc(new Date(lastCall).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}))}</div>`:''}${contact.note?`<p>${esc(contact.note)}</p>`:''}</div><div class="contact-actions">${href?`<a class="call-btn" href="${esc(href)}" data-action="record-call" data-contact="${esc(contact.id)}" aria-label="Позвонить ${esc(contact.name)}">☎</a>`:''}<button class="secondary-btn contact-edit-btn" data-action="contact-edit" data-contact="${esc(contact.id)}" aria-label="Редактировать ${esc(contact.name)}">✎</button></div></article>`;
+  return `<article class="contact-card"><div class="contact-copy"><div class="contact-name">${esc(contact.name)}</div><div class="contact-meta"><span>${esc(contactRoleLabel(contact.role))}</span><span>${esc(departmentLabel(contact.departmentId))}${contact.departmentId===ownDepartmentId()?' · наше':''}</span>${contact.phone?`<span>${esc(contact.phone)}</span>`:''}</div>${contact.note?`<p>${esc(contact.note)}</p>`:''}</div><div class="contact-actions">${href?`<a class="call-btn" href="${esc(href)}" aria-label="Позвонить ${esc(contact.name)}">☎</a>`:''}<button class="secondary-btn contact-edit-btn" data-action="contact-edit" data-contact="${esc(contact.id)}" aria-label="Редактировать ${esc(contact.name)}">✎</button></div></article>`;
 }
 
 function historyStepView(step, patient={id:'',steps:[]}, source='current') {
@@ -894,10 +892,8 @@ function historyPatientCard(patient, source='current') {
   const steps = patient.steps.filter(isHistoryStep);
   if (!steps.length) return '';
   const doctor=patientDoctor(patient);
-  const calls=(patient.events||[]).filter(event=>/^Звонок:/.test(event.text||''));
   return `<article class="history-patient">
     <div class="history-patient-head"><b>${esc(patient.surname || 'Без фамилии')} <span>· п.${esc(patient.room || '?')}</span></b><small>${esc(patient.transport || 'способ не указан')}${doctor?` · врач ${esc(doctor.name)}`:''}</small></div>
-    ${calls.length?`<div class="history-calls">${calls.map(event=>`<span>☎ ${esc(event.text.replace(/^Звонок:\s*/,''))} · ${esc(fmtClock(event.at))}</span>`).join('')}</div>`:''}
     <div class="history-steps">${steps.map(step=>historyStepView(step,patient,source)).join('')}</div>
   </article>`;
 }
@@ -1018,7 +1014,7 @@ function compactPatientCard(p) {
         <div class="current-label">Сейчас</div>
         <div class="compact-title">${esc(compactTitle)}</div>
         ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${step.time?`<span>◷ ${esc(step.time)}</span>`:''}</div>${missing.length?`<button class="missing-data" data-action="edit-patient" data-patient="${esc(p.id)}">⚠ Уточнить: ${esc(missing.join(', '))}</button>`:''}` : ''}
-        ${doctor?`<div class="compact-doctor"><span>Врач: ${esc(doctor.name)}${doctor.departmentId?` · ${esc(departmentLabel(doctor.departmentId))}`:''}</span>${phoneHref(doctor.phone)?`<a href="${esc(phoneHref(doctor.phone))}" data-action="record-call" data-contact="${esc(doctor.id||'')}" data-patient="${esc(p.id)}" aria-label="Позвонить врачу ${esc(doctor.name)}">☎</a>`:''}</div>`:''}
+        ${doctor?`<div class="compact-doctor"><span>Врач: ${esc(doctor.name)}${doctor.departmentId?` · ${esc(departmentLabel(doctor.departmentId))}`:''}</span>${phoneHref(doctor.phone)?`<a href="${esc(phoneHref(doctor.phone))}" aria-label="Позвонить врачу ${esc(doctor.name)}">☎</a>`:''}</div>`:''}
         ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>`${esc(s.title)}${s.time?` · ${esc(s.time)}`:''}`).join(' → ')}</div>` : ''}
       </div>
       <div class="compact-controls">
@@ -1407,18 +1403,9 @@ async function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(true); }
   if (action==='contact-add') { modal={type:'contact',contact:null}; return render(true); }
   if (action==='contact-edit') { modal={type:'contact',contact:el.dataset.contact}; return render(true); }
-  if (action==='record-call') {
-    const contact=getContacts().find(item=>item.id===el.dataset.contact);
-    const now=Date.now();
-    if(contact){contact.calls ||= [];contact.calls.push(now);contact.calls=contact.calls.slice(-50);}
-    const patient=state.patients.find(item=>item.id===el.dataset.patient);
-    if(patient)log(patient,`Звонок: ${contact?.name||'контакт'}`);
-    save(); setTimeout(()=>{if(document.getElementById('app'))render(true);},50); return;
-  }
   if (action==='contact-save') {
     const form=document.getElementById('contact-form'); if(!form?.reportValidity()) return;
-    const existing=getContacts().find(item=>item.id===modal.contact);
-    const fd=new FormData(form), value=normalizeContact({id:modal.contact||uid(),name:fd.get('name'),role:fd.get('role'),departmentId:fd.get('department'),phone:fd.get('phone'),note:fd.get('note'),calls:existing?.calls});
+    const fd=new FormData(form), value=normalizeContact({id:modal.contact||uid(),name:fd.get('name'),role:fd.get('role'),departmentId:fd.get('department'),phone:fd.get('phone'),note:fd.get('note')});
     if(!value)return;
     const index=getContacts().findIndex(item=>item.id===value.id);
     if(index>=0) state.contacts[index]=value; else state.contacts.push(value);
