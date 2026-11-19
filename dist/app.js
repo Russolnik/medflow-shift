@@ -1,6 +1,8 @@
 const STORAGE_KEY = 'medflow-prototype-v1';
 const AUTH_STORAGE_KEY = 'medflow-supabase-session-v1';
 const SYNC_META_KEY = 'medflow-sync-meta-v1';
+const SYNC_STATE_KEY = 'medflow-sync-state-v2';
+const RETRY_DELAYS = [5000, 15000, 30000];
 const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
 
@@ -73,12 +75,15 @@ let modal = null;
 let showCompleted = false;
 let localUpdatedAt = Number(localStorage.getItem(SYNC_META_KEY)) || 0;
 let syncTimer = null;
+let retryTimer = null;
+let retryAttempt = 0;
+let syncMeta = loadSyncMeta();
 let cloud = {
   session: loadCloudSession(),
   status: navigator.onLine ? 'local' : 'offline',
   message: '',
   syncing: false,
-  lastSyncedAt: 0
+  lastSyncedAt: syncMeta.lastSyncAt || 0
 };
 
 function load() {
@@ -90,6 +95,28 @@ function save() {
   localUpdatedAt = Date.now();
   localStorage.setItem(SYNC_META_KEY, String(localUpdatedAt));
   scheduleCloudSync();
+}
+function loadSyncMeta() {
+  try {
+    const value=JSON.parse(localStorage.getItem(SYNC_STATE_KEY))||{};
+    return { lastRemoteVersion:Number(value.lastRemoteVersion)||0, lastLocalAt:Number(value.lastLocalAt)||0, lastSyncAt:Number(value.lastSyncAt)||0 };
+  } catch { return {lastRemoteVersion:0,lastLocalAt:0,lastSyncAt:0}; }
+}
+function storeSyncMeta(next={}) {
+  syncMeta={...syncMeta,...next};
+  localStorage.setItem(SYNC_STATE_KEY,JSON.stringify(syncMeta));
+  cloud.lastSyncedAt=syncMeta.lastSyncAt||0;
+}
+function clearCloudRetry() {
+  if(retryTimer) clearTimeout(retryTimer);
+  retryTimer=null; retryAttempt=0;
+}
+function scheduleCloudRetry() {
+  if(retryTimer || !cloud.session?.user?.id || !navigator.onLine) return;
+  const delay=RETRY_DELAYS[Math.min(retryAttempt,RETRY_DELAYS.length-1)];
+  retryAttempt+=1;
+  cloud.message=`Повторная попытка через ${Math.round(delay/1000)} сек.`;
+  retryTimer=setTimeout(()=>{ retryTimer=null; syncCloudState(); },delay);
 }
 function loadCloudSession() {
   try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || null; }
@@ -139,45 +166,63 @@ async function pushCloudState() {
   const ready = await ensureCloudSession();
   if (!ready) return false;
   const at = localUpdatedAt || Date.now();
-  await cloudRequest('/rest/v1/medflow_states?on_conflict=user_id', {
+  const rows=await cloudRequest('/rest/v1/medflow_states?on_conflict=user_id&select=client_updated_at,updated_at', {
     method:'POST',
-    headers:{ Prefer:'resolution=merge-duplicates,return=minimal' },
+    headers:{ Prefer:'resolution=merge-duplicates,return=representation' },
     body:JSON.stringify({ user_id:cloud.session.user.id, payload:state, client_updated_at:new Date(at).toISOString() })
   });
-  cloud.lastSyncedAt = Date.now();
+  const row=Array.isArray(rows)?rows[0]:rows;
+  const remoteVersion=row?.updated_at?new Date(row.updated_at).getTime():Date.now();
+  const syncedAt=Date.now();
+  storeSyncMeta({lastRemoteVersion:remoteVersion,lastLocalAt:at,lastSyncAt:syncedAt});
+  clearCloudRetry();
   cloud.status = 'synced';
   cloud.message = '';
   return true;
+}
+function applyRemoteState(remote, message='Данные загружены из облака') {
+  state=normalizeState(clone(remote.payload));
+  localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+  localUpdatedAt=new Date(remote.client_updated_at||remote.updated_at).getTime()||Date.now();
+  localStorage.setItem(SYNC_META_KEY,String(localUpdatedAt));
+  const now=Date.now();
+  storeSyncMeta({lastRemoteVersion:new Date(remote.updated_at).getTime()||now,lastLocalAt:localUpdatedAt,lastSyncAt:now});
+  clearCloudRetry();
+  cloud.status='synced'; cloud.message=message;
 }
 async function syncCloudState({preferRemote=false}={}) {
   if (cloud.syncing || !cloud.session?.user?.id) return;
   if (!navigator.onLine) { cloud.status='offline'; cloud.message='Изменения сохранены на устройстве'; return; }
   cloud.syncing = true;
   cloud.status = 'syncing';
+  if (view === 'settings' || view === 'today') render(true);
   try {
     const ready = await ensureCloudSession();
     if (!ready) return;
     const rows = await cloudRequest(`/rest/v1/medflow_states?select=payload,client_updated_at,updated_at&user_id=eq.${encodeURIComponent(cloud.session.user.id)}&limit=1`);
     const remote = rows?.[0];
     const remoteAt = remote ? new Date(remote.client_updated_at || remote.updated_at).getTime() : 0;
-    if (remote && (preferRemote || !localUpdatedAt || remoteAt > localUpdatedAt)) {
-      state = normalizeState(remote.payload);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      localUpdatedAt = remoteAt || Date.now();
-      localStorage.setItem(SYNC_META_KEY, String(localUpdatedAt));
-      cloud.lastSyncedAt = Date.now();
-      cloud.status = 'synced';
-      cloud.message = 'Данные загружены из облака';
-      render(true);
-    } else {
-      await pushCloudState();
+    const remoteVersion=remote?new Date(remote.updated_at).getTime():0;
+    const localDirty=localUpdatedAt>(syncMeta.lastLocalAt||0);
+    const hasBaseline=Boolean(syncMeta.lastRemoteVersion);
+    const remoteChanged=Boolean(remote && hasBaseline && remoteVersion!==syncMeta.lastRemoteVersion);
+    if(remote && localDirty && (remoteChanged || !hasBaseline) && !preferRemote) {
+      cloud.status='conflict'; cloud.message='Есть изменения на другом устройстве';
+      modal={type:'sync-conflict',localState:clone(state),remoteState:normalizeState(clone(remote.payload)),remoteVersion,remoteAt};
+      render(true); return;
     }
+    if(remote && (preferRemote || (!localDirty && remoteChanged) || (!hasBaseline && remoteAt>localUpdatedAt))) {
+      applyRemoteState(remote); render(true);
+    } else if(remote && !localDirty && !remoteChanged) {
+      const now=Date.now(); storeSyncMeta({lastRemoteVersion:remoteVersion,lastLocalAt:localUpdatedAt,lastSyncAt:now}); clearCloudRetry(); cloud.status='synced'; cloud.message='';
+    } else await pushCloudState();
   } catch (error) {
     cloud.status = 'error';
     cloud.message = error.message || 'Не удалось синхронизировать';
+    scheduleCloudRetry();
   } finally {
     cloud.syncing = false;
-    if (view === 'settings') render(true);
+    if (view === 'settings' || view === 'today') render(true);
   }
 }
 function scheduleCloudSync() {
@@ -206,6 +251,7 @@ async function signOutCloud() {
   try {
     if (cloud.session?.access_token && navigator.onLine) await cloudRequest('/auth/v1/logout', {method:'POST'});
   } catch {}
+  clearCloudRetry();
   storeCloudSession(null);
   cloud.status = navigator.onLine ? 'local' : 'offline';
   cloud.message = 'Облачная сессия завершена. Локальные данные сохранены';
@@ -218,6 +264,63 @@ function authErrorMessage(error) {
   if(message.includes('password should be')) return 'Пароль должен содержать минимум 8 символов';
   if(message.includes('rate limit')) return 'Слишком много попыток. Подожди немного и повтори';
   return error?.message||'Не удалось выполнить вход';
+}
+function stepTouchedAt(step={}) {
+  return Math.max(0,...['startedAt','arrivedAt','readyAt','pickedUpAt','finishedAt'].map(key=>Number(step[key])||0));
+}
+function stepStateRank(value) {
+  return ({waiting:0,active:1,in_progress:2,in_or:3,pickup:4,postponed:5,cancelled:5,done:6})[value] ?? 0;
+}
+function mergeStep(localStep,remoteStep) {
+  if(!localStep) return clone(remoteStep);
+  if(!remoteStep) return clone(localStep);
+  const localTime=stepTouchedAt(localStep), remoteTime=stepTouchedAt(remoteStep);
+  const preferred=remoteTime>localTime || (remoteTime===localTime && stepStateRank(remoteStep.state)>stepStateRank(localStep.state)) ? remoteStep : localStep;
+  return {...clone(localStep),...clone(remoteStep),...clone(preferred),documents:{...(localStep.documents||{}),...(remoteStep.documents||{}),...(preferred.documents||{})}};
+}
+function mergePatient(localPatient,remotePatient) {
+  if(!localPatient) return clone(remotePatient);
+  if(!remotePatient) return clone(localPatient);
+  const localSteps=new Map((localPatient.steps||[]).map(step=>[step.id,step]));
+  const remoteSteps=new Map((remotePatient.steps||[]).map(step=>[step.id,step]));
+  const stepIds=[...new Set([...localSteps.keys(),...remoteSteps.keys()])];
+  const events=[...(localPatient.events||[]),...(remotePatient.events||[])].filter((event,index,all)=>index===all.findIndex(item=>item.at===event.at&&item.text===event.text)).sort((a,b)=>(a.at||0)-(b.at||0));
+  const patientTime=patient=>Math.max(0,...(patient.steps||[]).map(stepTouchedAt),...(patient.events||[]).map(event=>Number(event.at)||0));
+  const preferred=patientTime(remotePatient)>patientTime(localPatient)?remotePatient:localPatient;
+  return {...clone(localPatient),...clone(remotePatient),...clone(preferred),steps:stepIds.map(id=>mergeStep(localSteps.get(id),remoteSteps.get(id))),events};
+}
+function mergeStates(localState,remoteState) {
+  const local=normalizeState(clone(localState)), remote=normalizeState(clone(remoteState));
+  const localPatients=new Map(local.patients.map(patient=>[patient.id,patient]));
+  const remotePatients=new Map(remote.patients.map(patient=>[patient.id,patient]));
+  const patientIds=[...new Set([...localPatients.keys(),...remotePatients.keys()])];
+  const archives=[...(remote.archive||[]),...(local.archive||[])].filter((shift,index,all)=>index===all.findIndex(item=>item.id===shift.id));
+  const directions=[...(local.directions||[]),...(remote.directions||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
+  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),archive:archives,directions});
+}
+function backupEnvelope() {
+  return {format:'medflow-backup',version:1,exportedAt:new Date().toISOString(),state:clone(state)};
+}
+function exportBackup() {
+  const blob=new Blob([JSON.stringify(backupEnvelope(),null,2)],{type:'application/json'});
+  const link=document.createElement('a');
+  link.href=URL.createObjectURL(blob);
+  link.download=`medflow-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
+}
+async function requestPasswordReset(email) {
+  const redirectTo=typeof location==='undefined'?'':`${location.origin}${location.pathname}`;
+  return cloudRequest(`/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`,{method:'POST',body:JSON.stringify({email})},false);
+}
+async function handleAuthRedirect() {
+  if(typeof location==='undefined' || !location.hash) return;
+  const params=new URLSearchParams(location.hash.slice(1));
+  if(params.get('type')!=='recovery' || !params.get('access_token')) return;
+  const accessToken=params.get('access_token'), refreshToken=params.get('refresh_token');
+  const user=await cloudRequest('/auth/v1/user',{headers:{Authorization:`Bearer ${accessToken}`}},false);
+  storeCloudSession({access_token:accessToken,refresh_token:refreshToken,expires_at:Math.floor(Date.now()/1000)+Number(params.get('expires_in')||3600),user});
+  if(typeof history!=='undefined') history.replaceState(null,'',`${location.pathname}${location.search}`);
+  modal={type:'password-update',error:''}; render();
 }
 function esc(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function validTimestamp(value) { return Number.isFinite(value) && value > 0 ? value : null; }
@@ -481,6 +584,7 @@ function render(preservePosition=false) {
       ${navButton('history','↶','История')}
       ${navButton('settings','⚙','Настройки')}
     </nav>
+    <input id="backup-file" class="visually-hidden" type="file" accept="application/json,.json" />
     ${modal ? modalView() : ''}
   `;
   bind();
@@ -515,8 +619,16 @@ function topbarView() {
       </div>
       <p>Счётчик — пациенты, полоска — задачи. Удалённые ошибки не учитываются.</p>
     </details>
+    ${syncPillView()}
     ${inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}
   </header>`;
+}
+function syncPillView() {
+  const status=!navigator.onLine?'offline':!cloud.session?'local':cloud.status;
+  const labels={local:'Локально',synced:'Сохранено',syncing:'Синхронизация',pending:'Ожидает',offline:'Офлайн',error:'Ошибка',conflict:'Конфликт'};
+  const savedAt=cloud.lastSyncedAt||localUpdatedAt;
+  const time=savedAt ? ` · ${fmtClock(savedAt)}` : '';
+  return `<button class="sync-pill ${esc(status)}" data-action="cloud-status" title="${esc(cloud.message||cloudStatusLabel())}"><i aria-hidden="true"></i><span>${labels[status]||'Облако'}${time}</span></button>`;
 }
 function todayView(active, completed, ops, inOr) {
   const engagedPatients = active.filter(p => p.steps.some(s => ['in_progress','in_or','pickup'].includes(s.state)));
@@ -624,7 +736,7 @@ function historyView() {
 
 function cloudStatusLabel() {
   if (!cloud.session) return navigator.onLine ? 'Только на этом устройстве' : 'Офлайн · только на устройстве';
-  return ({ synced:'Синхронизировано', syncing:'Синхронизация…', pending:'Есть несохранённые изменения', offline:'Офлайн · синхронизируем позже', error:'Ошибка синхронизации' })[cloud.status] || 'Облако подключено';
+  return ({ synced:'Синхронизировано', syncing:'Синхронизация…', pending:'Есть несохранённые изменения', offline:'Офлайн · синхронизируем позже', error:'Ошибка синхронизации', conflict:'Нужно выбрать версию' })[cloud.status] || 'Облако подключено';
 }
 function cloudSettingsView() {
   if (!cloud.session) return `<section class="settings-card cloud-card">
@@ -645,6 +757,11 @@ function settingsView() {
   const buttonPosition = addButtonPosition();
   return `
     ${cloudSettingsView()}
+    <section class="settings-card">
+      <div class="settings-card-head"><h2>Резервная копия</h2><span>файл на телефоне или ПК</span></div>
+      <p>Скачай всю текущую смену, историю и настройки. Файл можно восстановить на этом или другом устройстве.</p>
+      <div class="settings-actions backup-actions"><button class="primary-btn" data-action="export-backup">Скачать смену</button><button class="secondary-btn" data-action="import-backup">Восстановить из файла</button></div>
+    </section>
     <section class="settings-card">
       <div class="settings-card-head"><h2>Быстрая запись</h2><span>положение кнопки «＋»</span></div>
       <p>Выбери, где удобнее держать кнопку добавления на экранах «Сегодня» и «Направления».</p>
@@ -733,24 +850,46 @@ function documentChoice(name, stage, title) {
 
 function modalView() {
   if (modal.type === 'cloud-auth') {
-    const authMode=modal.authMode==='signup'?'signup':'signin';
+    const authMode=['signup','recover'].includes(modal.authMode)?modal.authMode:'signin';
     const isSignup=authMode==='signup';
+    const isRecover=authMode==='recover';
     return `<div class="modal-backdrop" data-action="close"><section class="modal auth-modal" onclick="event.stopPropagation()">
-      <div class="auth-heading"><div class="auth-mark" aria-hidden="true">M</div><div><h2>${isSignup?'Создать аккаунт':'Войти в MedFlow'}</h2><p class="modal-sub">Смены будут доступны на телефоне и компьютере</p></div></div>
+      <div class="auth-heading"><div class="auth-mark" aria-hidden="true">M</div><div><h2>${isRecover?'Восстановить пароль':isSignup?'Создать аккаунт':'Войти в MedFlow'}</h2><p class="modal-sub">${isRecover?'Пришлём безопасную ссылку на почту':'Смены будут доступны на телефоне и компьютере'}</p></div></div>
       <div class="auth-benefits"><span>✓ Работает офлайн</span><span>✓ Синхронизирует после подключения</span></div>
-      <div class="auth-switch" role="tablist" aria-label="Вход или регистрация">
+      ${!isRecover?`<div class="auth-switch" role="tablist" aria-label="Вход или регистрация">
         <button type="button" role="tab" aria-selected="${!isSignup}" class="${!isSignup?'active':''}" data-action="cloud-auth-mode" data-mode="signin">Вход</button>
         <button type="button" role="tab" aria-selected="${isSignup}" class="${isSignup?'active':''}" data-action="cloud-auth-mode" data-mode="signup">Регистрация</button>
-      </div>
+      </div>`:''}
       <form id="cloud-auth-form" class="auth-form">
         <label class="auth-field"><span>Email</span><input name="email" type="email" inputmode="email" autocomplete="email" required placeholder="name@example.com"></label>
-        <label class="auth-field"><span>Пароль</span><div class="password-field"><input id="cloud-password" name="password" type="password" autocomplete="${isSignup?'new-password':'current-password'}" required minlength="8" placeholder="Минимум 8 символов"><button type="button" data-action="cloud-password-toggle" aria-label="Показать пароль">Показать</button></div></label>
+        ${!isRecover?`<label class="auth-field"><span>Пароль</span><div class="password-field"><input id="cloud-password" name="password" type="password" autocomplete="${isSignup?'new-password':'current-password'}" required minlength="8" placeholder="Минимум 8 символов"><button type="button" data-action="cloud-password-toggle" aria-label="Показать пароль">Показать</button></div></label>`:''}
         ${modal.error?`<p class="form-error auth-error" role="alert">${esc(modal.error)}</p>`:''}
-        <button type="submit" class="primary-btn auth-submit" data-action="${isSignup?'cloud-signup':'cloud-signin'}">${isSignup?'Создать аккаунт':'Войти'}</button>
+        <button type="submit" class="primary-btn auth-submit" data-action="${isRecover?'cloud-recover':isSignup?'cloud-signup':'cloud-signin'}">${isRecover?'Отправить ссылку':isSignup?'Создать аккаунт':'Войти'}</button>
       </form>
-      <p class="auth-note">${isSignup?'После регистрации может понадобиться подтверждение email.':'Данные на этом устройстве останутся доступны даже без интернета.'}</p>
+      ${!isSignup&&!isRecover?'<button type="button" class="auth-recover" data-action="cloud-auth-mode" data-mode="recover">Забыл пароль</button>':''}
+      ${isRecover?'<button type="button" class="auth-recover" data-action="cloud-auth-mode" data-mode="signin">Вернуться ко входу</button>':''}
+      <p class="auth-note">${isRecover?'Ссылка откроет MedFlow и предложит задать новый пароль.':isSignup?'После регистрации может понадобиться подтверждение email.':'Данные на этом устройстве останутся доступны даже без интернета.'}</p>
       <button type="button" class="auth-close" data-action="close">Не сейчас</button>
     </section></div>`;
+  }
+  if (modal.type === 'password-update') {
+    return `<div class="modal-backdrop"><section class="modal auth-modal"><div class="auth-heading"><div class="auth-mark">M</div><div><h2>Новый пароль</h2><p class="modal-sub">Придумай пароль минимум из 8 символов</p></div></div>
+      <form id="password-update-form" class="auth-form">
+        <label class="auth-field"><span>Новый пароль</span><input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+        <label class="auth-field"><span>Повтори пароль</span><input name="confirm" type="password" required minlength="8" autocomplete="new-password"></label>
+        ${modal.error?`<p class="form-error auth-error">${esc(modal.error)}</p>`:''}
+        <button class="primary-btn auth-submit" type="submit" data-action="cloud-password-update">Сохранить пароль</button>
+      </form></section></div>`;
+  }
+  if (modal.type === 'sync-conflict') {
+    const localCount=modal.localState?.patients?.length||0, remoteCount=modal.remoteState?.patients?.length||0;
+    return `<div class="modal-backdrop"><section class="modal confirm-modal"><h2>Изменения на двух устройствах</h2><p class="modal-sub">Облачная версия изменилась после последней синхронизации. Ничего не будет перезаписано без твоего выбора.</p>
+      <div class="conflict-versions"><div><b>Это устройство</b><span>${localCount} пациентов</span></div><div><b>Облако</b><span>${remoteCount} пациентов</span></div></div>
+      <div class="conflict-actions"><button class="primary-btn" data-action="sync-conflict-merge">Объединить безопасно</button><button class="secondary-btn" data-action="sync-conflict-local">Оставить это устройство</button><button class="secondary-btn" data-action="sync-conflict-remote">Взять облачную версию</button></div>
+      <p class="modal-sub">При объединении карточки и этапы с обоих устройств сохранятся; для одного и того же этапа берётся более поздний статус.</p></section></div>`;
+  }
+  if (modal.type === 'import-backup-confirm') {
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>Восстановить копию?</h2><p class="modal-sub">В файле: ${modal.importState?.patients?.length||0} пациентов в текущей смене и ${modal.importState?.archive?.length||0} прошлых смен. Текущие данные будут заменены.</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="confirm-import-backup">Восстановить</button></div></section></div>`;
   }
   if (modal.type === 'documents') {
     const p = state.patients.find(x => x.id === modal.patient);
@@ -911,9 +1050,21 @@ function bind() {
   const authForm=document.getElementById('cloud-auth-form');
   if(authForm) authForm.onsubmit=(e)=>{
     e.preventDefault();
-    const action=modal?.authMode==='signup'?'cloud-signup':'cloud-signin';
+    const action=modal?.authMode==='recover'?'cloud-recover':modal?.authMode==='signup'?'cloud-signup':'cloud-signin';
     const submit=authForm.querySelector(`[data-action="${action}"]`);
     if(submit) handleAction(action,submit,e);
+  };
+  const passwordForm=document.getElementById('password-update-form');
+  if(passwordForm) passwordForm.onsubmit=(e)=>{e.preventDefault();handleAction('cloud-password-update',passwordForm.querySelector('[data-action="cloud-password-update"]'),e);};
+  const backupFile=document.getElementById('backup-file');
+  if(backupFile) backupFile.onchange=async()=>{
+    const file=backupFile.files?.[0]; if(!file)return;
+    try {
+      const raw=JSON.parse(await file.text());
+      const imported=raw?.format==='medflow-backup'?raw.state:raw;
+      if(!imported || !Array.isArray(imported.patients) || !Array.isArray(imported.archive)) throw new Error('Это не резервная копия MedFlow');
+      modal={type:'import-backup-confirm',importState:normalizeState(clone(imported))}; render();
+    } catch(error) { cloud.message=error.message||'Не удалось прочитать файл'; view='settings'; render(); }
   };
 }
 function log(p,text) { p.events ||= []; p.events.push({at:Date.now(),text}); }
@@ -973,8 +1124,9 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 async function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
   if (action==='close') { modal=null; return render(); }
+  if (action==='cloud-status') { view='settings'; return render(); }
   if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
-  if (action==='cloud-auth-mode') { modal.authMode=el.dataset.mode==='signup'?'signup':'signin'; modal.error=''; return render(); }
+  if (action==='cloud-auth-mode') { modal.authMode=['signup','recover'].includes(el.dataset.mode)?el.dataset.mode:'signin'; modal.error=''; return render(); }
   if (action==='cloud-password-toggle') {
     const input=document.getElementById('cloud-password');
     if(!input) return;
@@ -994,8 +1146,39 @@ async function handleAction(action, el, e) {
       return render();
     }
   }
+  if (action==='cloud-recover') {
+    e?.preventDefault();
+    const form=document.getElementById('cloud-auth-form'); if(!form?.reportValidity())return;
+    const email=String(new FormData(form).get('email')||'').trim(); modal.error='';
+    try { await requestPasswordReset(email); cloud.message='Ссылка для восстановления отправлена на почту'; modal=null; view='settings'; return render(); }
+    catch(error) { modal.error=authErrorMessage(error); return render(); }
+  }
+  if (action==='cloud-password-update') {
+    e?.preventDefault();
+    const form=document.getElementById('password-update-form'); if(!form?.reportValidity())return;
+    const fd=new FormData(form), password=String(fd.get('password')||''), confirm=String(fd.get('confirm')||'');
+    if(password!==confirm){modal.error='Пароли не совпадают';return render();}
+    try { await cloudRequest('/auth/v1/user',{method:'PUT',body:JSON.stringify({password})}); cloud.message='Пароль изменён'; modal=null; view='settings'; return render(); }
+    catch(error){modal.error=authErrorMessage(error);return render();}
+  }
+  if (action==='sync-conflict-remote') {
+    const remote={payload:modal.remoteState,updated_at:new Date(modal.remoteVersion).toISOString(),client_updated_at:new Date(modal.remoteAt||modal.remoteVersion).toISOString()};
+    modal=null; applyRemoteState(remote,'Выбрана облачная версия'); return render();
+  }
+  if (action==='sync-conflict-local' || action==='sync-conflict-merge') {
+    const conflict=modal;
+    if(action==='sync-conflict-merge') state=mergeStates(conflict.localState,conflict.remoteState);
+    else state=normalizeState(clone(conflict.localState));
+    localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); localUpdatedAt=Date.now(); localStorage.setItem(SYNC_META_KEY,String(localUpdatedAt));
+    storeSyncMeta({lastRemoteVersion:conflict.remoteVersion}); modal=null; cloud.status='pending'; render();
+    try { await pushCloudState(); } catch(error) { cloud.status='error'; cloud.message=error.message||'Не удалось сохранить выбранную версию'; scheduleCloudRetry(); }
+    return render(true);
+  }
   if (action==='cloud-sync') { cloud.message=''; await syncCloudState(); return render(true); }
   if (action==='cloud-logout') { await signOutCloud(); return render(true); }
+  if (action==='export-backup') { exportBackup(); cloud.message='Резервная копия скачана'; return; }
+  if (action==='import-backup') { document.getElementById('backup-file')?.click(); return; }
+  if (action==='confirm-import-backup') { state=normalizeState(clone(modal.importState)); modal=null; save(); cloud.message='Резервная копия восстановлена'; view='today'; return render(); }
   if (action==='toggle-completed') { showCompleted=!showCompleted; return render(); }
   if (action==='set-add-position') {
     state.settings.addButtonPosition=ADD_BUTTON_POSITIONS.includes(el.dataset.position)?el.dataset.position:'floating';
@@ -1198,18 +1381,20 @@ globalThis.__MEDFLOW_TEST__={
   syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
-  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep
+  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 window.addEventListener('online',()=>{
   cloud.status=cloud.session?'pending':'local';
   cloud.message=cloud.session?'Сеть появилась, синхронизируем…':'';
-  if(cloud.session) syncCloudState(); else if(view==='settings') render(true);
+  if(cloud.session) syncCloudState(); else if(view==='settings'||view==='today') render(true);
 });
 window.addEventListener('offline',()=>{
   cloud.status='offline';
   cloud.message=cloud.session?'Изменения сохраняются на устройстве':'';
-  if(view==='settings') render(true);
+  if(view==='settings'||view==='today') render(true);
 });
 render();
-if(cloud.session) setTimeout(()=>syncCloudState(),0);
+handleAuthRedirect().then(()=>{ if(cloud.session && modal?.type!=='password-update') setTimeout(()=>syncCloudState(),0); }).catch(error=>{
+  cloud.message=authErrorMessage(error); if(cloud.session) setTimeout(()=>syncCloudState(),0); if(view==='settings')render(true);
+});

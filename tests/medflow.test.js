@@ -415,12 +415,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v23"));
+  assert.ok(sw.includes("medflow-shell-v24"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=23');
+  assert.equal(manifest.start_url,'./?pwa=24');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -448,6 +448,31 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('class="auth-switch"'));
   assert.ok(source.includes('data-action="cloud-password-toggle"'));
   assert.ok(source.includes('authErrorMessage(error)'));
+  assert.ok(source.includes('RETRY_DELAYS = [5000, 15000, 30000]'));
+  assert.ok(source.includes("modal={type:'sync-conflict'"));
+  assert.ok(source.includes('data-action="sync-conflict-merge"'));
+  assert.ok(source.includes('data-action="export-backup"'));
+  assert.ok(source.includes('data-action="import-backup"'));
+  assert.ok(source.includes('/auth/v1/recover'));
+  assert.ok(source.includes("cloudRequest('/auth/v1/user'"));
+}
+
+{
+  const local={schemaVersion:2,shiftStartedAt:1,patients:[{id:'same',surname:'Локальный',room:'1',steps:[{id:'step-a',title:'КТ',type:'ct',state:'in_progress',startedAt:100}],events:[]}],archive:[],directions:[],settings:{}};
+  const remote={schemaVersion:2,shiftStartedAt:1,patients:[{id:'same',surname:'Облачный',room:'2',steps:[{id:'step-a',title:'КТ',type:'ct',state:'done',startedAt:100,finishedAt:200},{id:'step-b',title:'ЭКГ',type:'ecg',state:'waiting'}],events:[]},{id:'remote-only',surname:'Новый',room:'3',steps:[step('УЗИ','active','ultrasound')],events:[]}],archive:[],directions:[],settings:{}};
+  const merged=api.mergeStates(local,remote);
+  assert.equal(merged.patients.length,2);
+  const same=merged.patients.find(patient=>patient.id==='same');
+  assert.equal(same.steps.length,2);
+  assert.equal(same.steps.find(item=>item.id==='step-a').state,'done');
+}
+
+{
+  const backup=api.backupEnvelope();
+  assert.equal(backup.format,'medflow-backup');
+  assert.equal(backup.version,1);
+  assert.ok(Array.isArray(backup.state.patients));
+  assert.ok(api.syncPillView().includes('sync-pill'));
 }
 
 console.log('MedFlow: все сценарии пройдены');
