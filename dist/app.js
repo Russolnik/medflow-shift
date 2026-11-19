@@ -14,7 +14,8 @@ const DEFAULT_DIRECTIONS = [
   { id: 'ct', label: 'КТ' },
   { id: 'mri', label: 'МРТ' },
   { id: 'echo', label: 'Эхо' },
-  { id: 'baro', label: 'Барокамера' }
+  { id: 'baro', label: 'Барокамера' },
+  { id: 'fgs', label: 'ФГС' }
 ];
 
 const SYSTEM_STEPS = [
@@ -40,7 +41,7 @@ function clone(value) {
 }
 
 const seed = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   shiftStartedAt: Date.now(),
   patients: [
     {
@@ -357,7 +358,8 @@ function inferShiftStart(patients) {
 }
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
-  next.schemaVersion = 2;
+  const incomingVersion = Number(next.schemaVersion) || 1;
+  next.schemaVersion = 3;
   next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
   next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
   next.archive = Array.isArray(next.archive) ? next.archive.filter(shift => shift && typeof shift === 'object') : [];
@@ -374,6 +376,7 @@ function normalizeState(value) {
     .filter(item => item && item.id && String(item.label || '').trim())
     .map(item => ({ id: String(item.id), label: String(item.label).trim(), locked: item.id === 'operation' }));
   if (!next.directions.some(item => item.id === 'operation')) next.directions.unshift(clone(DEFAULT_DIRECTIONS[0]));
+  if (incomingVersion < 3 && !next.directions.some(item => item.id === 'fgs')) next.directions.push(clone(DEFAULT_DIRECTIONS.find(item=>item.id==='fgs')));
   return next;
 }
 function getDirections() { return state.directions || DEFAULT_DIRECTIONS; }
@@ -469,6 +472,21 @@ function operationElapsed(step, now=Date.now()) {
   const ended = validTimestamp(step?.pickedUpAt) || validTimestamp(now);
   return ended && ended >= started ? ended - started : 0;
 }
+function pickupTravelElapsed(step, now=Date.now()) {
+  const started=validTimestamp(step?.pickedUpAt);
+  if(!started) return 0;
+  const ended=validTimestamp(step?.finishedAt)||validTimestamp(now);
+  return ended && ended>=started ? ended-started : 0;
+}
+function operationTimersView(step) {
+  if(!step) return '';
+  const operationTime=operationElapsed(step);
+  if(validTimestamp(step.pickedUpAt)) {
+    const travelTime=pickupTravelElapsed(step);
+    return `<div class="timer-stack"><div class="timer operation-time ${timerClass(operationTime)}"><small>Оперблок</small><b>${fmtDuration(operationTime)}</b></div><div class="timer travel-time"><small>В пути</small><b>${fmtDuration(travelTime)}</b></div></div>`;
+  }
+  return `<div class="timer ${timerClass(operationTime)}"><small>В оперблоке</small><b>${fmtDuration(operationTime)}</b></div>`;
+}
 function setStepDocument(step, stage, status, at=Date.now()) {
   if (!step || !['start','finish'].includes(stage) || !DOCUMENT_STATUSES.includes(status)) return false;
   step.documents ||= {};
@@ -498,6 +516,7 @@ function stepHistoryFacts(step, now=Date.now()) {
     pickedUpAt,
     finishedAt,
     duration:durationBetween(operation ? arrivedAt : startedAt, operation ? operationEnd : finishedAt),
+    travelDuration:operation && pickedUpAt ? durationBetween(pickedUpAt, finishedAt || (step?.state==='pickup' ? validTimestamp(now) : null)) : null,
     destination:step?.destination || '',
     startDocuments:documentStatusLabel(step?.documents?.start,'start'),
     finishDocuments:documentStatusLabel(step?.documents?.finish,'finish')
@@ -680,6 +699,7 @@ function historyStepView(step, patient={id:'',steps:[]}, source='current') {
     if (facts.duration !== null) timeline.push(`в оперблоке ${fmtDuration(facts.duration)}`);
     if (facts.readyAt) timeline.push(`вызов ${fmtClock(facts.readyAt)}`);
     if (facts.pickedUpAt) timeline.push(`забран ${fmtClock(facts.pickedUpAt)}`);
+    if (facts.travelDuration !== null) timeline.push(`в пути ${fmtDuration(facts.travelDuration)}`);
     if (!stopped && facts.finishedAt) timeline.push(`${facts.destination || 'завершено'} ${fmtClock(facts.finishedAt)}`);
   } else if (stopped) {
     if (facts.startedAt) timeline.push(`начато ${fmtClock(facts.startedAt)}`);
@@ -793,7 +813,6 @@ function compactPatientCard(p) {
   const next = nextWaitingStep(p);
   const urgent = step?.urgent || p.priority === 'urgent';
   const orStep = p.steps.find(s => ['in_or','pickup'].includes(s.state));
-  const elapsed = operationElapsed(orStep);
   const currentIndex = step ? p.steps.indexOf(step) : -1;
   const upcoming = currentIndex >= 0
     ? p.steps.slice(currentIndex + 1).filter(s => !isTerminalStep(s)).slice(0, 2)
@@ -812,7 +831,7 @@ function compactPatientCard(p) {
         ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>`${esc(s.title)}${s.time?` · ${esc(s.time)}`:''}`).join(' → ')}</div>` : ''}
       </div>
       <div class="compact-controls">
-        ${orStep ? `<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>` : ''}
+        ${operationTimersView(orStep)}
         ${step ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : lastTerminal ? `<button class="secondary-btn restore-btn" data-action="restore-step" data-patient="${p.id}" data-step="${lastTerminal.id}" data-source="current">Вернуть в очередь</button>` : ''}
         <div class="compact-tools"><button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>
       </div>
@@ -824,7 +843,6 @@ function patientCard(p) {
   const step = currentStep(p);
   const urgent = step?.urgent || p.priority==='urgent';
   const orStep = p.steps.find(s=>['in_or','pickup'].includes(s.state));
-  const elapsed = operationElapsed(orStep);
   return `<article class="patient-card ${urgent?'urgent':''}">
     <div class="patient-top">
       <div class="row between"><div><div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room||'?')}</span></div></div>
@@ -832,7 +850,7 @@ function patientCard(p) {
     </div>
     <div class="route">${p.steps.map((s,i)=>`<span class="step ${s.state==='done'?'done':s===step?'active':''}"><i>${s.state==='done'?'✓':i+1}</i>${esc(s.title)}</span>`).join('')}</div>
     <div class="current">
-      <div class="row between"><div><div class="current-label">${step?'Текущий этап':'Маршрут завершён'}</div><div class="current-title">${step?esc(stepTitle(step)):'Всё выполнено'}</div></div>${orStep?`<div class="timer ${timerClass(elapsed)}">${fmtDuration(elapsed)}</div>`:''}</div>
+      <div class="row between"><div><div class="current-label">${step?'Текущий этап':'Маршрут завершён'}</div><div class="current-title">${step?esc(stepTitle(step)):'Всё выполнено'}</div></div>${operationTimersView(orStep)}</div>
       <div class="meta"><span>↗ ${esc(p.transport||'Способ уточнить')}</span>${step?.time?`<span>◷ ${esc(step.time)}</span>`:''}${step?.needsClarification?'<span>⚠ Уточнить на посту</span>':''}</div>
       ${p.note?`<div class="note">${esc(p.note)}</div>`:''}
       ${step ? `<div class="actions"><button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button><button class="secondary-btn" data-action="pin" data-patient="${p.id}">${p.pinned?'Снять':'Следующей'}</button><button class="secondary-btn" data-action="more" data-patient="${p.id}">•••</button></div>`:''}
@@ -1030,10 +1048,11 @@ function modalView() {
   if (modal.type === 'destination') {
     const p = state.patients.find(x => x.id === modal.patient);
     const next = p ? nextWaitingStep(p) : null;
-    return `<div class="modal-backdrop"><section class="modal"><h2>Куда доставлен пациент?</h2><p class="modal-sub">Таймер остановится после выбора</p>
+    const destinations=[next?.title,'Вернулся в свою палату','Переведён в реанимацию','Переведён в другое отделение','Передан другому сотруднику','Другое место'].filter((item,index,all)=>item&&all.indexOf(item)===index);
+    return `<div class="modal-backdrop"><section class="modal"><h2>Куда доставлен пациент?</h2><p class="modal-sub">Таймер пути остановится после выбора</p>
       ${next?`<label class="continue-toggle"><input id="continue-after-operation" type="checkbox" /><span><b>После доставки открыть следующий этап</b><small>Следующий этап: ${esc(next.title)} · документы подтвердим отдельно</small></span></label>`:''}
       <div class="patient-list" style="margin-top:16px">
-      ${['Вернулся в свою палату','Переведён в реанимацию','Переведён в другое отделение','Передан другому сотруднику','Другое место'].map(x=>`<button class="secondary-btn" data-action="finish-operation" data-patient="${modal.patient}" data-destination="${x}">${x}</button>`).join('')}
+      ${destinations.map((x,index)=>`<button class="secondary-btn ${index===0&&next?'next-destination':''}" data-action="finish-operation" data-patient="${modal.patient}" data-destination="${esc(x)}">${index===0&&next?'Следующий пункт: ':''}${esc(x)}</button>`).join('')}
       <button class="secondary-btn" data-action="close">Назад, пока не выбирать</button></div></section></div>`;
   }
   return '';
@@ -1379,7 +1398,7 @@ globalThis.__MEDFLOW_TEST__={
   isStoppedStep,isTerminalStep,isHistoryStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,stopCurrentStep,
   actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,normalizeStep,typeLabel,
   syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
-  fmtClock,durationBetween,operationElapsed,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
+  fmtClock,durationBetween,operationElapsed,pickupTravelElapsed,operationTimersView,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
   resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView
 };

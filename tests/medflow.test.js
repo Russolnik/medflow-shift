@@ -132,9 +132,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 2);
+  assert.equal(migrated.schemaVersion, 3);
   assert.ok(migrated.shiftStartedAt > 0);
-  for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера']) {
+  for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера','ФГС']) {
     assert.ok(migrated.directions.some(item => item.label === label));
   }
 }
@@ -221,10 +221,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const facts = api.stepHistoryFacts(operation);
   assert.equal(facts.operation, true);
   assert.equal(facts.duration, 130000);
+  assert.equal(facts.travelDuration, 60000);
   assert.equal(facts.destination, 'Палата');
   const html = api.historyStepView(operation);
   assert.ok(html.includes('доставлен'));
   assert.ok(html.includes('в оперблоке 2 мин'));
+  assert.ok(html.includes('в пути 1 мин'));
   assert.ok(html.includes('Палата'));
 }
 
@@ -235,7 +237,10 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.stepHistoryFacts(livePickup,61000).duration, 60000);
   livePickup.pickedUpAt = 41000;
   assert.equal(api.operationElapsed(livePickup,91000), 40000);
+  assert.equal(api.pickupTravelElapsed(livePickup,91000), 50000);
   assert.equal(api.stepHistoryFacts(livePickup,91000).duration, 40000);
+  assert.equal(api.stepHistoryFacts(livePickup,91000).travelDuration, 50000);
+  assert.ok(api.operationTimersView(livePickup).includes('В пути'));
 }
 
 {
@@ -246,6 +251,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const operation = migrated.patients[0].steps[0];
   assert.equal(operation.arrivedAt, 1000);
   assert.equal(operation.startedAt, undefined);
+  assert.ok(migrated.directions.some(item=>item.id==='fgs'&&item.label==='ФГС'));
 }
 
 {
@@ -415,12 +421,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v24"));
+  assert.ok(sw.includes("medflow-shell-v25"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=24');
+  assert.equal(manifest.start_url,'./?pwa=25');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
