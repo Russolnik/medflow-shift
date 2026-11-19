@@ -452,6 +452,13 @@ function stepMatchesDirection(step, selected) {
   if (selected === 'all') return true;
   return selected === 'operation' ? isOperationStep(step) : step.type === selected;
 }
+function canEditRouteStep(step) { return Boolean(step && ['active','waiting'].includes(step.state)); }
+function changeRouteStepType(step, type) {
+  if(!canEditRouteStep(step)) return false;
+  step.type=type;
+  step.title=typeLabel(type);
+  return true;
+}
 function fmtDuration(ms) {
   const mins = Math.max(0, Math.floor(ms / 60000));
   const h = Math.floor(mins / 60), m = mins % 60;
@@ -997,8 +1004,8 @@ function modalView() {
   if (modal.type === 'route') {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
-      <h2>Цепочка · ${esc(p?.surname || '')}</h2><p class="modal-sub">Расставь этапы в любом порядке</p>
-      <div class="route-editor">${modal.steps.map((s,i)=>{const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';return `<div class="route-editor-item ${movable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" /><input class="route-time-input" type="time" data-route-time="${i}" value="${esc(s.time || '')}" aria-label="Время этапа ${i+1}" />${movable?'':'<small>Порядок текущего или завершённого этапа защищён</small>'}</div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
+      <h2>Цепочка · ${esc(p?.surname || '')}</h2><p class="modal-sub">Направление текущего этапа можно менять до начала выполнения</p>
+      <div class="route-editor">${modal.steps.map((s,i)=>{const editable=canEditRouteStep(s);const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';const hint=!editable?'Выполняемый или завершённый этап защищён':!movable?'Текущий этап можно изменить, но нельзя переставить':'Можно изменить, переставить или удалить';return `<div class="route-editor-item ${editable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><select class="route-type-select" data-route-type="${i}" aria-label="Направление этапа ${i+1}" ${editable?'':'disabled'}>${directionOptions(s.type,true)}</select><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" ${editable?'':'disabled'} /><input class="route-time-input" type="time" data-route-time="${i}" value="${esc(s.time || '')}" aria-label="Время этапа ${i+1}" ${editable?'':'disabled'} /><small>${hint}</small></div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
       <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><input id="route-time" type="time" aria-label="Время нового этапа" /><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
       <div class="modal-actions"><button class="secondary-btn" data-action="details" data-patient="${modal.patient}">Назад</button><button class="primary-btn" data-action="route-save" data-patient="${modal.patient}">Сохранить цепочку</button></div>
     </section></div>`;
@@ -1078,6 +1085,7 @@ function bind() {
   document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(true); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
+  document.querySelectorAll('[data-route-type]').forEach(el=>el.onchange=()=>{ const index=Number(el.dataset.routeType),step=modal?.type==='route'?modal.steps[index]:null;if(changeRouteStepType(step,el.value)){const title=document.querySelector(`[data-route-title="${index}"]`);if(title)title.value=step.title;} });
   document.querySelectorAll('[data-direction-name]').forEach(el=>el.oninput=()=>{ const item=modal?.directions?.find(item=>item.id===el.dataset.directionName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
   const authForm=document.getElementById('cloud-auth-form');
@@ -1412,7 +1420,7 @@ async function handleAction(action, el, e) {
 globalThis.__MEDFLOW_TEST__={
   isStoppedStep,isTerminalStep,isHistoryStep,currentStep,isComplete,score,nextWaitingStep,activateNext,canContinueNow,completeCurrentStep,stopCurrentStep,
   actionLabel,timerClass,shiftProgress,esc,isOperationStep,hasTodayOperation,normalizeState,normalizeStep,typeLabel,
-  syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
+  syncPatientPriority,stepMatchesDirection,canEditRouteStep,changeRouteStepType,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,pickupTravelElapsed,operationTimersView,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
   resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView,preopChecklistView

@@ -48,6 +48,25 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
+  const active={...step('ФГС','active','fgs')};
+  assert.equal(api.canEditRouteStep(active),true);
+  assert.equal(api.changeRouteStepType(active,'ultrasound'),true);
+  assert.equal(active.type,'ultrasound');
+  assert.equal(active.title,'УЗИ');
+
+  const running={...step('ФГС','in_progress','fgs')};
+  assert.equal(api.canEditRouteStep(running),false);
+  assert.equal(api.changeRouteStepType(running,'ultrasound'),false);
+  assert.equal(running.type,'fgs');
+
+  const changedFromOperation={priority:'operation',block:'xo',steps:[{...step('Операция','active','operation')}]};
+  api.changeRouteStepType(changedFromOperation.steps[0],'ultrasound');
+  api.syncPatientPriority(changedFromOperation,false);
+  assert.equal(changedFromOperation.priority,'normal');
+  assert.equal(changedFromOperation.block,'');
+}
+
+{
   const patient = { steps:[step('КТ','in_progress','ct'),step('Рентген')] };
   assert.equal(api.canContinueNow(patient), true);
   const result = api.completeCurrentStep(patient, true);
@@ -432,12 +451,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v26"));
+  assert.ok(sw.includes("medflow-shell-v27"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=26');
+  assert.equal(manifest.start_url,'./?pwa=27');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -472,6 +491,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-action="import-backup"'));
   assert.ok(source.includes('/auth/v1/recover'));
   assert.ok(source.includes("cloudRequest('/auth/v1/user'"));
+  assert.ok(source.includes('data-route-type'));
+  assert.ok(source.includes('Направление текущего этапа можно менять до начала выполнения'));
 }
 
 {

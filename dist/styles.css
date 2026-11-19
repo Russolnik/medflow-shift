@@ -207,12 +207,14 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .route-editor { display:grid; gap:8px; margin-top:17px; }
 .route-editor-item { display:flex; align-items:center; gap:9px; min-height:48px; padding:7px 8px; border:1px solid rgba(255,255,255,.07); border-radius:13px; background:rgba(0,0,0,.15); }
 .route-editor-item b { flex:1; font-size:13px; }
-.route-item-copy { min-width:0; flex:1; display:grid; grid-template-columns:minmax(0,1fr) 104px; gap:6px; align-items:center; }
+.route-item-copy { min-width:0; flex:1; display:grid; grid-template-columns:124px minmax(0,1fr) 104px; gap:6px; align-items:center; }
 .route-item-copy b,.route-item-copy small { display:block; }
 .route-item-copy small { grid-column:1/-1; color:var(--muted); font-size:9px; margin-top:1px; }
-.route-title-input { width:100%; min-height:34px; padding:6px 8px; border-radius:9px; color:var(--text); background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08); outline:none; font-size:13px; font-weight:750; }
+.route-title-input,.route-type-select { width:100%; min-width:0; min-height:34px; padding:6px 8px; border-radius:9px; color:var(--text); background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08); outline:none; font-size:13px; font-weight:750; }
+.route-type-select { color-scheme:dark; font-size:11px; }
 .route-time-input { width:100%; min-width:0; min-height:34px; padding:6px; border-radius:9px; color:var(--text); color-scheme:dark; background:rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.08); outline:none; font-size:12px; }
-.route-title-input:focus,.route-time-input:focus { border-color:rgba(202,220,224,.40); }
+.route-title-input:focus,.route-type-select:focus,.route-time-input:focus { border-color:rgba(202,220,224,.40); }
+.route-title-input:disabled,.route-type-select:disabled,.route-time-input:disabled { opacity:.55; }
 .route-editor-item.locked { background:rgba(255,255,255,.012); }
 .route-index { width:27px; height:27px; display:grid; place-items:center; border-radius:9px; color:#e6ecec; background:rgba(255,255,255,.025); border:1px solid rgba(207,224,224,.26); font-size:11px; font-weight:900; }
 .route-tools { display:flex; gap:4px; }
