@@ -151,7 +151,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 5);
+  assert.equal(migrated.schemaVersion, 6);
   assert.ok(migrated.departments.length >= 1);
   assert.ok(Array.isArray(migrated.contacts));
   assert.equal(migrated.settings.ownDepartmentId, migrated.departments[0].id);
@@ -347,20 +347,33 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const filterNode = {scrollLeft:73};
+  const secondFilterNode = {scrollLeft:141};
   const oldQuerySelector = sandbox.document.querySelector;
+  const oldQuerySelectorAll = sandbox.document.querySelectorAll;
   const oldScrollTo = sandbox.scrollTo;
   let restoredTop = null;
   sandbox.scrollY = 240;
   sandbox.document.querySelector = selector => selector === '.filters' ? filterNode : null;
+  sandbox.document.querySelectorAll = selector => selector === '.filters' ? [filterNode,secondFilterNode] : [];
   sandbox.scrollTo = (_x,y) => { restoredTop = y; };
   const position = api.captureViewPosition();
   filterNode.scrollLeft = 0;
+  secondFilterNode.scrollLeft = 0;
   sandbox.scrollY = 0;
   api.restoreViewPosition(position);
   assert.equal(filterNode.scrollLeft, 73);
+  assert.equal(secondFilterNode.scrollLeft, 141);
   assert.equal(restoredTop, 240);
   sandbox.document.querySelector = oldQuerySelector;
+  sandbox.document.querySelectorAll = oldQuerySelectorAll;
   sandbox.scrollTo = oldScrollTo;
+}
+
+{
+  const migrated=api.normalizeState({patients:[{id:'old-xo',block:'xo',steps:[],events:[]},{id:'old-gxo',block:'gxo',steps:[],events:[]},{id:'old-angio',block:'angio',steps:[],events:[]}],archive:[],settings:{}});
+  assert.equal(migrated.patients[0].block,'op');
+  assert.equal(migrated.patients[1].block,'op');
+  assert.equal(migrated.patients[2].block,'angio');
 }
 
 {
@@ -476,12 +489,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v29"));
+  assert.ok(sw.includes("medflow-shell-v30"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=29');
+  assert.equal(manifest.start_url,'./?pwa=30');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -526,6 +539,10 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-action="contact-save"'));
   assert.ok(source.includes('href="${esc(href)}"'));
   assert.ok(source.includes('name="doctor"'));
+  assert.ok(source.includes("op:'ОПРБЛК'"));
+  assert.ok(source.includes("angio:'АНГБЛК'"));
+  assert.ok(!source.includes('<option value="gxo"'));
+  assert.ok(!source.includes('<option value="xo"'));
 }
 
 {

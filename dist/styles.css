@@ -111,8 +111,7 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; }
 .badge { display:inline-flex; align-items:center; min-height:25px; padding:4px 8px; border-radius:8px; font-size:10px; font-weight:850; letter-spacing:.02em; }
 .badge.urgent { background:transparent; border:1px solid rgba(215,125,137,.42); color:#d9949d; }
-.badge.gxo { background:transparent; border:1px solid rgba(121,166,184,.36); color:#9bbac6; }
-.badge.xo { background:transparent; border:1px solid rgba(160,147,181,.36); color:#b6acc5; }
+.badge.op { background:transparent; border:1px solid rgba(160,147,181,.36); color:#b6acc5; }
 .badge.angio { background:transparent; border:1px solid rgba(130,176,164,.36); color:#9fc0b7; }
 .badge.neutral { background:transparent; border:1px solid rgba(222,232,235,.12); color:#b8c0c3; }
 .badge.warn { background:transparent; border:1px solid rgba(190,169,111,.34); color:#cbbd92; }
