@@ -217,17 +217,27 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
-  const operation = {...step('Операция','done','operation'),startedAt:1000,arrivedAt:11000,readyAt:131000,pickedUpAt:141000,finishedAt:201000,destination:'Палата'};
+  const operation = {...step('Операция','done','operation'),preopCheck:{at:900,dentures:true,jewelry:true,belongings:true},startedAt:1000,arrivedAt:11000,readyAt:131000,pickedUpAt:141000,finishedAt:201000,destination:'Палата'};
   const facts = api.stepHistoryFacts(operation);
   assert.equal(facts.operation, true);
+  assert.equal(facts.preopCheckedAt, 900);
   assert.equal(facts.duration, 130000);
   assert.equal(facts.travelDuration, 60000);
   assert.equal(facts.destination, 'Палата');
   const html = api.historyStepView(operation);
   assert.ok(html.includes('доставлен'));
+  assert.ok(html.includes('проверка перед операцией'));
   assert.ok(html.includes('в оперблоке 2 мин'));
   assert.ok(html.includes('в пути 1 мин'));
   assert.ok(html.includes('Палата'));
+}
+
+{
+  const html=api.preopChecklistView();
+  assert.ok(html.includes('Съёмные зубные протезы'));
+  assert.ok(html.includes('Украшения и часы'));
+  assert.ok(html.includes('Другие съёмные вещи'));
+  assert.equal((html.match(/required type="checkbox"/g)||[]).length,3);
 }
 
 {
@@ -394,7 +404,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const patient = {id:'restore-one',priority:'normal',block:'',pinned:true,steps:[{
-    ...step('RETURN-ME','done','ct'),startedAt:100,finishedAt:200,documents:{start:'taken'}
+    ...step('RETURN-ME','done','ct'),startedAt:100,finishedAt:200,documents:{start:'taken'},preopCheck:{at:90}
   }]};
   const result = api.restoreOrRepeatStep(patient,'RETURN-ME');
   assert.equal(result.mode,'restore');
@@ -402,6 +412,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(patient.steps[0].startedAt,undefined);
   assert.equal(patient.steps[0].finishedAt,undefined);
   assert.equal(patient.steps[0].documents,undefined);
+  assert.equal(patient.steps[0].preopCheck,undefined);
   assert.equal(patient.pinned,false);
 }
 
@@ -421,12 +432,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v25"));
+  assert.ok(sw.includes("medflow-shell-v26"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=25');
+  assert.equal(manifest.start_url,'./?pwa=26');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }

@@ -505,6 +505,7 @@ function stepHistoryFacts(step, now=Date.now()) {
   const readyAt = validTimestamp(step?.readyAt);
   const pickedUpAt = validTimestamp(step?.pickedUpAt);
   const finishedAt = validTimestamp(step?.finishedAt);
+  const preopCheckedAt = validTimestamp(step?.preopCheck?.at);
   const operationEnd = pickedUpAt || (['in_or','pickup'].includes(step?.state) ? validTimestamp(now) : finishedAt || readyAt);
   return {
     title:step?.title || typeLabel(step?.type),
@@ -515,6 +516,7 @@ function stepHistoryFacts(step, now=Date.now()) {
     readyAt,
     pickedUpAt,
     finishedAt,
+    preopCheckedAt,
     duration:durationBetween(operation ? arrivedAt : startedAt, operation ? operationEnd : finishedAt),
     travelDuration:operation && pickedUpAt ? durationBetween(pickedUpAt, finishedAt || (step?.state==='pickup' ? validTimestamp(now) : null)) : null,
     destination:step?.destination || '',
@@ -694,6 +696,7 @@ function historyStepView(step, patient={id:'',steps:[]}, source='current') {
   const status = step.state === 'done' ? 'Готово' : step.state === 'cancelled' ? 'Отменено' : step.state === 'postponed' ? 'Перенесено' : ['in_progress','in_or','pickup'].includes(step.state) ? 'В работе' : 'Ожидает';
   const timeline = [];
   if (facts.operation) {
+    if (facts.preopCheckedAt) timeline.push(`проверка перед операцией ${fmtClock(facts.preopCheckedAt)}`);
     if (facts.startedAt) timeline.push(`взял из палаты ${fmtClock(facts.startedAt)}`);
     if (facts.arrivedAt) timeline.push(`доставлен ${fmtClock(facts.arrivedAt)}`);
     if (facts.duration !== null) timeline.push(`в оперблоке ${fmtDuration(facts.duration)}`);
@@ -866,6 +869,15 @@ function documentChoice(name, stage, title) {
   </fieldset>`;
 }
 
+function preopChecklistView() {
+  return `<fieldset class="document-choice preop-checklist"><legend>Перед выходом на операцию</legend>
+    <p>Отметь после проверки или уточнения у медперсонала:</p>
+    <label><input required type="checkbox" name="preop-dentures" /><span><b>Съёмные зубные протезы сняты или отсутствуют</b><small>В том числе съёмные «челюсти»</small></span></label>
+    <label><input required type="checkbox" name="preop-jewelry" /><span><b>Украшения и часы сняты или отсутствуют</b><small>Цепочки, серьги, кольца, пирсинг и другие съёмные предметы</small></span></label>
+    <label><input required type="checkbox" name="preop-belongings" /><span><b>Другие съёмные вещи уточнены</b><small>Очки, слуховой аппарат и личные вещи — по указанию медперсонала</small></span></label>
+  </fieldset>`;
+}
+
 function modalView() {
   if (modal.type === 'cloud-auth') {
     const authMode=['signup','recover'].includes(modal.authMode)?modal.authMode:'signin';
@@ -919,9 +931,11 @@ function modalView() {
     const subtitle = mode === 'continue' && next ? `${step.title} → ${next.title}` : mode === 'start' ? `Погрузка / выход · ${step.title}` : step.title;
     const needsStart = ['start','continue'].includes(mode);
     const needsFinish = ['finish','continue','operation-pickup','handoff','stop'].includes(mode);
+    const needsPreopCheck = mode === 'start' && isOperationStep(step);
     return `<div class="modal-backdrop" data-action="close"><section class="modal document-modal" onclick="event.stopPropagation()">
       <h2>${title}</h2><p class="modal-sub">${esc(subtitle)} · выбери один вариант в каждом блоке</p>
       <form id="documents-form" class="document-form">
+        ${needsPreopCheck?preopChecklistView():''}
         ${needsFinish?documentChoice('finish-documents','finish','Что с документами при завершении?'):''}
         ${needsStart?documentChoice('start-documents','start',mode==='continue'?'Что взять на следующий этап?':'Что взять с собой?'):''}
       </form>
@@ -1109,7 +1123,7 @@ function stopCurrentStep(p, action, at=Date.now()) {
 }
 
 function resetStepTracking(step) {
-  ['startedAt','arrivedAt','readyAt','pickedUpAt','finishedAt','destination','documents'].forEach(key=>delete step[key]);
+  ['startedAt','arrivedAt','readyAt','pickedUpAt','finishedAt','destination','documents','preopCheck'].forEach(key=>delete step[key]);
   step.urgent=false;
   return step;
 }
@@ -1305,6 +1319,7 @@ async function handleAction(action, el, e) {
     if (['finish','continue','operation-pickup','handoff','stop'].includes(mode) && !DOCUMENT_STATUSES.includes(finishStatus)) return;
     p.pinned=false;
     if (mode==='start') {
+      if(isOperationStep(s)) s.preopCheck={at:now,dentures:true,jewelry:true,belongings:true};
       setStepDocument(s,'start',startStatus,now); s.state='in_progress'; s.startedAt ||= now;
       log(p,`Начато сопровождение: ${s.title}`); modal=null;
     } else if (mode==='finish') {
@@ -1400,7 +1415,7 @@ globalThis.__MEDFLOW_TEST__={
   syncPatientPriority,stepMatchesDirection,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,pickupTravelElapsed,operationTimersView,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
-  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView
+  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView,preopChecklistView
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 window.addEventListener('online',()=>{
