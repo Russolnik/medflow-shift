@@ -489,12 +489,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v30"));
+  assert.ok(sw.includes("medflow-shell-v31"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=30');
+  assert.equal(manifest.start_url,'./?pwa=31');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -541,6 +541,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('name="doctor"'));
   assert.ok(source.includes("op:'ОПРБЛК'"));
   assert.ok(source.includes("angio:'АНГБЛК'"));
+  assert.ok(source.includes("hasTodayOperation(p)?'operation-today'"));
+  assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
 }

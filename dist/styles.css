@@ -82,6 +82,7 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .patient-card { position:relative; background:rgba(14,18,23,.91); border:1px solid rgba(222,232,235,.095); border-radius:18px; overflow:hidden; box-shadow:0 13px 34px rgba(0,0,0,.22); backdrop-filter:blur(14px); }
 .patient-card::after { content:""; position:absolute; left:16px; right:16px; bottom:0; height:1px; background:linear-gradient(90deg,transparent,rgba(235,241,242,.18),transparent); opacity:.55; }
 .patient-card.urgent { border-color:rgba(215,125,137,.50); box-shadow:0 0 18px rgba(245,225,228,.035),0 14px 35px rgba(0,0,0,.26); }
+.patient-card.operation-today:not(.urgent) { border-color:rgba(203,182,122,.46); box-shadow:0 0 16px rgba(203,182,122,.035),0 13px 34px rgba(0,0,0,.23); }
 .compact-card { padding:12px; }
 .compact-card::after { left:12px; right:12px; }
 .compact-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }

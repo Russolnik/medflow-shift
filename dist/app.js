@@ -946,7 +946,7 @@ function compactPatientCard(p) {
     : [];
   const compactTitle = step?.state === 'in_progress' ? step.title : step ? stepTitle(step) : 'Маршрут завершён';
   const doctor = patientDoctor(p);
-  return `<article class="patient-card compact-card ${urgent?'urgent':''}">
+  return `<article class="patient-card compact-card ${hasTodayOperation(p)?'operation-today':''} ${urgent?'urgent':''}">
     <div class="compact-head">
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
       <div class="badges">${p.departmentId?`<span class="badge department ${isOwnDepartment(p)?'own':''}" title="${esc(departmentLabel(p.departmentId))}">${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · НАШЕ':''}</span>`:''}${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
@@ -972,7 +972,7 @@ function patientCard(p) {
   const step = currentStep(p);
   const urgent = step?.urgent || p.priority==='urgent';
   const orStep = p.steps.find(s=>['in_or','pickup'].includes(s.state));
-  return `<article class="patient-card ${urgent?'urgent':''}">
+  return `<article class="patient-card ${hasTodayOperation(p)?'operation-today':''} ${urgent?'urgent':''}">
     <div class="patient-top">
       <div class="row between"><div><div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room||'?')}</span></div></div>
       <div class="badges">${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div></div>
