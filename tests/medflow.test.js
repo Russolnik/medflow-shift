@@ -151,8 +151,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.schemaVersion, 5);
   assert.ok(migrated.departments.length >= 1);
+  assert.ok(Array.isArray(migrated.contacts));
   assert.equal(migrated.settings.ownDepartmentId, migrated.departments[0].id);
   assert.ok(migrated.shiftStartedAt > 0);
   for (const label of ['Операция','Рентген','ЭКГ','УЗИ','КТ','МРТ','Эхо','Барокамера','ФГС']) {
@@ -179,6 +180,16 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.patientMatchesDepartment({departmentId:'department-own'}, 'department-own'), true);
   assert.ok(api.departmentOptions('department-own').includes('наше'));
   assert.ok(api.departmentFiltersView().includes('data-department-filter'));
+}
+
+{
+  const contact=api.normalizeContact({id:'c1',name:' Иванов И.И. ',role:'doctor',departmentId:'department-own',phone:'+7 (900) 123-45-67'});
+  assert.equal(contact.name,'Иванов И.И.');
+  assert.equal(contact.role,'doctor');
+  assert.equal(api.contactRoleLabel('orderly'),'Санитар / санитарка');
+  assert.equal(api.phoneHref(contact.phone),'tel:+79001234567');
+  assert.equal(api.normalizeContact({name:'   '}),null);
+  assert.ok(api.contactsView().includes('Контакты отделений'));
 }
 
 {
@@ -465,12 +476,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v28"));
+  assert.ok(sw.includes("medflow-shell-v29"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=28');
+  assert.equal(manifest.start_url,'./?pwa=29');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -484,7 +495,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
   assert.ok(appRoot.innerHTML.includes('class="fab"'));
   assert.ok(appRoot.innerHTML.includes('data-view="settings"'));
-  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 4);
+  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 5);
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
 }
@@ -511,6 +522,10 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-department-filter'));
   assert.ok(source.includes('name="department"'));
   assert.ok(source.includes("mode === 'department'"));
+  assert.ok(source.includes("navButton('contacts'"));
+  assert.ok(source.includes('data-action="contact-save"'));
+  assert.ok(source.includes('href="${esc(href)}"'));
+  assert.ok(source.includes('name="doctor"'));
 }
 
 {

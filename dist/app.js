@@ -28,6 +28,13 @@ const DEFAULT_DEPARTMENTS = [
   { id: 'department-own', label: 'Наше отделение' }
 ];
 
+const CONTACT_ROLES = [
+  { id: 'doctor', label: 'Врач' },
+  { id: 'nurse', label: 'Медсестра' },
+  { id: 'orderly', label: 'Санитар / санитарка' },
+  { id: 'other', label: 'Другое' }
+];
+
 const SORT_MODES = ['priority', 'department', 'time-asc', 'time-desc'];
 const ADD_BUTTON_POSITIONS = ['floating', 'inline'];
 const DOCUMENT_STATUSES = ['taken', 'not_required'];
@@ -45,7 +52,7 @@ function clone(value) {
 }
 
 const seed = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   shiftStartedAt: Date.now(),
   patients: [
     {
@@ -71,6 +78,7 @@ const seed = {
   archive: [],
   directions: clone(DEFAULT_DIRECTIONS),
   departments: clone(DEFAULT_DEPARTMENTS),
+  contacts: [],
   settings: { sortMode: 'priority', addButtonPosition: 'floating', ownDepartmentId: 'department-own' }
 };
 
@@ -78,6 +86,8 @@ let state = load();
 let view = 'today';
 let direction = 'all';
 let departmentFilter = 'all';
+let contactDepartmentFilter = 'all';
+let contactRoleFilter = 'all';
 let modal = null;
 let showCompleted = false;
 let localUpdatedAt = Number(localStorage.getItem(SYNC_META_KEY)) || 0;
@@ -304,7 +314,8 @@ function mergeStates(localState,remoteState) {
   const archives=[...(remote.archive||[]),...(local.archive||[])].filter((shift,index,all)=>index===all.findIndex(item=>item.id===shift.id));
   const directions=[...(local.directions||[]),...(remote.directions||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
   const departments=[...(local.departments||[]),...(remote.departments||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
-  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),archive:archives,directions,departments});
+  const contacts=[...(local.contacts||[]),...(remote.contacts||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
+  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),archive:archives,directions,departments,contacts});
 }
 function backupEnvelope() {
   return {format:'medflow-backup',version:1,exportedAt:new Date().toISOString(),state:clone(state)};
@@ -355,7 +366,15 @@ function normalizePatient(patient) {
   patient.steps = Array.isArray(patient.steps) ? patient.steps.map(normalizeStep).filter(Boolean) : [];
   patient.events = Array.isArray(patient.events) ? patient.events : [];
   patient.departmentId = String(patient.departmentId || '');
+  patient.doctorId = String(patient.doctorId || '');
+  patient.doctorName = String(patient.doctorName || '');
   return patient;
+}
+function normalizeContact(contact) {
+  if (!contact || typeof contact !== 'object') return null;
+  const name=String(contact.name||'').trim();
+  if(!name) return null;
+  return {id:String(contact.id||uid()),name,role:CONTACT_ROLES.some(item=>item.id===contact.role)?contact.role:'other',departmentId:String(contact.departmentId||''),phone:String(contact.phone||'').trim(),note:String(contact.note||'').trim()};
 }
 function inferShiftStart(patients) {
   const timestamps = (Array.isArray(patients) ? patients : []).flatMap(patient => [
@@ -367,7 +386,7 @@ function inferShiftStart(patients) {
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
   const incomingVersion = Number(next.schemaVersion) || 1;
-  next.schemaVersion = 4;
+  next.schemaVersion = 5;
   next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
   next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
   next.archive = Array.isArray(next.archive) ? next.archive.filter(shift => shift && typeof shift === 'object') : [];
@@ -390,6 +409,12 @@ function normalizeState(value) {
   const validDepartmentIds = new Set(next.departments.map(item => item.id));
   next.patients.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; });
   next.archive.forEach(shift => shift.patients.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; }));
+  next.contacts = Array.isArray(next.contacts) ? next.contacts.map(normalizeContact).filter(Boolean) : [];
+  next.contacts.forEach(contact => { if(!validDepartmentIds.has(contact.departmentId)) contact.departmentId=''; });
+  const validContactIds=new Set(next.contacts.map(contact=>contact.id));
+  const normalizeDoctorLink=patient=>{ if(patient.doctorId && patient.doctorId!=='external' && !validContactIds.has(patient.doctorId)) patient.doctorId=patient.doctorName?'external':''; };
+  next.patients.forEach(normalizeDoctorLink);
+  next.archive.forEach(shift=>shift.patients.forEach(normalizeDoctorLink));
   if (!Array.isArray(next.directions)) next.directions = clone(DEFAULT_DIRECTIONS);
   next.directions = next.directions
     .filter(item => item && item.id && String(item.label || '').trim())
@@ -408,6 +433,22 @@ function departmentOptions(selected='', includeUnknown=true) {
 }
 function patientMatchesDepartment(patient, selected=departmentFilter) {
   return selected === 'all' || (selected === 'none' ? !patient.departmentId : patient.departmentId === selected);
+}
+function getContacts() { return state.contacts || []; }
+function contactRoleLabel(role) { return CONTACT_ROLES.find(item=>item.id===role)?.label || 'Другое'; }
+function doctorContacts() { return getContacts().filter(contact=>contact.role==='doctor').sort((a,b)=>a.name.localeCompare(b.name,'ru')); }
+function doctorOptions(patient={}) {
+  return `<option value="">Не указан</option><option value="external" ${patient.doctorId==='external'?'selected':''}>Врач другого отделения / вручную</option>${doctorContacts().map(contact=>`<option value="${esc(contact.id)}" ${patient.doctorId===contact.id?'selected':''}>${esc(contact.name)} · ${esc(departmentLabel(contact.departmentId))}</option>`).join('')}`;
+}
+function patientDoctor(patient) {
+  const contact=getContacts().find(item=>item.id===patient?.doctorId);
+  if(contact) return {name:contact.name,departmentId:contact.departmentId,phone:contact.phone,role:contact.role};
+  if(patient?.doctorId==='external' || patient?.doctorName) return {name:patient.doctorName||'Врач другого отделения',departmentId:patient.departmentId||'',phone:'',role:'doctor'};
+  return null;
+}
+function phoneHref(phone='') {
+  const cleaned=String(phone).trim().replace(/[^\d+*#,;]/g,'');
+  return cleaned ? `tel:${cleaned}` : '';
 }
 function directionOptions(selected='', includeSystem=false) {
   const items = includeSystem ? [...getDirections(), ...SYSTEM_STEPS] : getDirections();
@@ -635,12 +676,13 @@ function render(preservePosition=false) {
     <main class="shell">
       ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
-      ${view === 'today' ? todayView(active, completed) : view === 'directions' ? directionsView() : view === 'history' ? historyView() : settingsView()}
+      ${view === 'today' ? todayView(active, completed) : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
     </main>
     ${showFloatingAdd() ? '<button class="fab" data-action="add" aria-label="Записать пациента">＋</button>' : ''}
     <nav class="nav">
       ${navButton('today','⌂','Сегодня')}
       ${navButton('directions','⌘','Направления')}
+      ${navButton('contacts','☎','Контакты')}
       ${navButton('history','↶','История')}
       ${navButton('settings','⚙','Настройки')}
     </nav>
@@ -655,7 +697,7 @@ function navButton(id, icon, text) { return `<button class="nav-btn ${view===id?
 function topbarView() {
   const inlineAdd = addButtonPosition() === 'inline';
   if (view !== 'today') {
-    const title = view === 'directions' ? 'Направления' : view === 'history' ? 'История' : 'Настройки';
+    const title = view === 'directions' ? 'Направления' : view === 'contacts' ? 'Контакты' : view === 'history' ? 'История' : 'Настройки';
     return `<header class="topbar section-topbar"><h1>${title}</h1>${view==='directions'&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
   }
   const progress = shiftProgress(state.patients);
@@ -739,6 +781,23 @@ function directionsView() {
   `;
 }
 
+function contactsView() {
+  const departments=[{id:'all',label:'Все отделения'},...getDepartments(),{id:'none',label:'Без отделения'}];
+  const roles=[{id:'all',label:'Все роли'},...CONTACT_ROLES];
+  const contacts=getContacts()
+    .filter(contact=>contactDepartmentFilter==='all'||(contactDepartmentFilter==='none'?!contact.departmentId:contact.departmentId===contactDepartmentFilter))
+    .filter(contact=>contactRoleFilter==='all'||contact.role===contactRoleFilter)
+    .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  return `<div class="contacts-toolbar"><div><h2>Контакты отделений</h2><span>${getContacts().length} сохранено</span></div><button class="primary-btn contact-add-btn" data-action="contact-add">＋ Добавить</button></div>
+    <div class="filter-caption">Отделение</div><div class="filters">${departments.map(item=>`<button class="chip ${contactDepartmentFilter===item.id?'active':''}" data-contact-department="${esc(item.id)}">${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</button>`).join('')}</div>
+    <div class="filter-caption">Роль</div><div class="filters">${roles.map(item=>`<button class="chip ${contactRoleFilter===item.id?'active':''}" data-contact-role="${esc(item.id)}">${esc(item.label)}</button>`).join('')}</div>
+    <div class="contact-list">${contacts.map(contactCard).join('')||'<div class="empty compact-empty">Добавь врача, медсестру или санитара — номер будет доступен в одно нажатие</div>'}</div>`;
+}
+function contactCard(contact) {
+  const href=phoneHref(contact.phone);
+  return `<article class="contact-card"><div class="contact-copy"><div class="contact-name">${esc(contact.name)}</div><div class="contact-meta"><span>${esc(contactRoleLabel(contact.role))}</span><span>${esc(departmentLabel(contact.departmentId))}${contact.departmentId===ownDepartmentId()?' · наше':''}</span>${contact.phone?`<span>${esc(contact.phone)}</span>`:''}</div>${contact.note?`<p>${esc(contact.note)}</p>`:''}</div><div class="contact-actions">${href?`<a class="call-btn" href="${esc(href)}" aria-label="Позвонить ${esc(contact.name)}">☎</a>`:''}<button class="secondary-btn contact-edit-btn" data-action="contact-edit" data-contact="${esc(contact.id)}" aria-label="Редактировать ${esc(contact.name)}">✎</button></div></article>`;
+}
+
 function historyStepView(step, patient={id:'',steps:[]}, source='current') {
   const facts = stepHistoryFacts(step);
   const stopped = isStoppedStep(step);
@@ -775,8 +834,9 @@ function historyStepView(step, patient={id:'',steps:[]}, source='current') {
 function historyPatientCard(patient, source='current') {
   const steps = patient.steps.filter(isHistoryStep);
   if (!steps.length) return '';
+  const doctor=patientDoctor(patient);
   return `<article class="history-patient">
-    <div class="history-patient-head"><b>${esc(patient.surname || 'Без фамилии')} <span>· п.${esc(patient.room || '?')}</span></b><small>${esc(patient.transport || 'способ не указан')}</small></div>
+    <div class="history-patient-head"><b>${esc(patient.surname || 'Без фамилии')} <span>· п.${esc(patient.room || '?')}</span></b><small>${esc(patient.transport || 'способ не указан')}${doctor?` · врач ${esc(doctor.name)}`:''}</small></div>
     <div class="history-steps">${steps.map(step=>historyStepView(step,patient,source)).join('')}</div>
   </article>`;
 }
@@ -875,6 +935,7 @@ function compactPatientCard(p) {
     ? p.steps.slice(currentIndex + 1).filter(s => !isTerminalStep(s)).slice(0, 2)
     : [];
   const compactTitle = step?.state === 'in_progress' ? step.title : step ? stepTitle(step) : 'Маршрут завершён';
+  const doctor = patientDoctor(p);
   return `<article class="patient-card compact-card ${urgent?'urgent':''}">
     <div class="compact-head">
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
@@ -885,6 +946,7 @@ function compactPatientCard(p) {
         <div class="current-label">Сейчас</div>
         <div class="compact-title">${esc(compactTitle)}</div>
         ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${step.time?`<span>◷ ${esc(step.time)}</span>`:''}${step.needsClarification?'<span>⚠ уточнить данные</span>':''}</div>` : ''}
+        ${doctor?`<div class="compact-doctor"><span>Врач: ${esc(doctor.name)}${doctor.departmentId?` · ${esc(departmentLabel(doctor.departmentId))}`:''}</span>${phoneHref(doctor.phone)?`<a href="${esc(phoneHref(doctor.phone))}" aria-label="Позвонить врачу ${esc(doctor.name)}">☎</a>`:''}</div>`:''}
         ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>`${esc(s.title)}${s.time?` · ${esc(s.time)}`:''}`).join(' → ')}</div>` : ''}
       </div>
       <div class="compact-controls">
@@ -1002,7 +1064,7 @@ function modalView() {
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <div class="row between"><div><h2>${esc(p.surname)} · палата ${esc(p.room || 'уточнить')}</h2><p class="modal-sub">Полная карточка пациента</p></div>${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:''}</div>
       <div class="detail-block"><div class="current-label">Маршрут на сегодня</div><div class="route-detail">${p.steps.map((s,i)=>`<div class="route-detail-item ${s.state==='done'?'done':s===currentStep(p)?'active':''}"><span>${s.state==='done'?'✓':i+1}</span><b>${esc(s.title)}${s.time?` <small>· ${esc(s.time)}</small>`:''}</b></div>`).join('')}</div></div>
-      <div class="detail-grid"><div><span>Отделение</span><b>${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · наше':''}</b></div><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
+      <div class="detail-grid"><div><span>Отделение</span><b>${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · наше':''}</b></div><div><span>Врач</span><b>${esc(patientDoctor(p)?.name||'Не указан')}</b></div><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
       ${p.note?`<div class="note">${esc(p.note)}</div>`:''}
       <div class="patient-list detail-actions">
         <button class="secondary-btn" data-action="edit-patient" data-patient="${p.id}">Редактировать данные</button>
@@ -1027,6 +1089,8 @@ function modalView() {
         <div class="field"><label>Фамилия</label><input required name="surname" value="${esc(p.surname)}" /></div>
         <div class="field"><label>Палата</label><input name="room" value="${esc(p.room || '')}" placeholder="Можно уточнить позже" /></div>
         <div class="field"><label>Отделение</label><select name="department">${departmentOptions(p.departmentId)}</select></div>
+        <div class="field"><label>Врач</label><select name="doctor">${doctorOptions(p)}</select></div>
+        <div class="field"><label>Врач вручную</label><input name="doctor-name" value="${esc(p.doctorName||'')}" placeholder="Если врача нет в контактах" /></div>
         <div class="field"><label>Передвижение</label><select name="transport">
           ${['','Пешком с сопровождением','Кресло','Каталка'].map(x=>`<option value="${x}" ${p.transport===x?'selected':''}>${x||'Уточнить позже'}</option>`).join('')}
         </select></div>
@@ -1058,6 +1122,20 @@ function modalView() {
       <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="department-save">Сохранить</button></div>
     </section></div>`;
   }
+  if (modal.type === 'contact') {
+    const contact = getContacts().find(item=>item.id===modal.contact) || {name:'',role:'doctor',departmentId:ownDepartmentId(),phone:'',note:''};
+    return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
+      <h2>${modal.contact?'Редактировать контакт':'Новый контакт'}</h2><p class="modal-sub">Номер хранится вместе с личными данными MedFlow. Кнопка звонка только откроет приложение «Телефон».</p>
+      <form id="contact-form" class="form-grid">
+        <div class="field"><label>Имя / фамилия</label><input required name="name" value="${esc(contact.name)}" placeholder="Например, Иванов И.И." autofocus /></div>
+        <div class="field"><label>Роль</label><select name="role">${CONTACT_ROLES.map(item=>`<option value="${item.id}" ${contact.role===item.id?'selected':''}>${esc(item.label)}</option>`).join('')}</select></div>
+        <div class="field"><label>Отделение</label><select name="department">${departmentOptions(contact.departmentId)}</select></div>
+        <div class="field"><label>Телефон</label><input name="phone" type="tel" inputmode="tel" value="${esc(contact.phone)}" placeholder="+7… или внутренний номер" /></div>
+        <div class="field full"><label>Заметка</label><textarea name="note" placeholder="Когда звонить, кабинет, смена…">${esc(contact.note)}</textarea></div>
+      </form>
+      <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button>${modal.contact?'<button class="danger-btn" data-action="contact-delete">Удалить</button>':''}<button class="primary-btn" data-action="contact-save">Сохранить</button></div>
+    </section></div>`;
+  }
   if (modal.type === 'route') {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
@@ -1074,6 +1152,7 @@ function modalView() {
         <div class="field"><label>Фамилия</label><input required name="surname" placeholder="Иванов" autofocus /></div>
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно позже" /></div>
         <div class="field"><label>Отделение</label><select name="department">${departmentOptions(ownDepartmentId())}</select></div>
+        <div class="field"><label>Врач</label><select name="doctor">${doctorOptions()}</select></div>
         <div class="field"><label>Что сейчас</label><select name="type">${directionOptions('', true)}</select></div>
         <div class="field"><label>Уточнение</label><input name="title" placeholder="Например, ХО или срочное КТ" /></div>
         <div class="field"><label>Время</label><input type="time" name="time" /></div>
@@ -1091,6 +1170,8 @@ function modalView() {
         <div class="field"><label>Фамилия / условное имя</label><input required name="surname" placeholder="Например, Иванов" autofocus /></div>
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно уточнить позже" /></div>
         <div class="field"><label>Отделение</label><select name="department">${departmentOptions(ownDepartmentId())}</select></div>
+        <div class="field"><label>Врач</label><select name="doctor">${doctorOptions()}</select></div>
+        <div class="field"><label>Врач вручную</label><input name="doctor-name" placeholder="Если врача нет в контактах" /></div>
         <div class="field"><label>Ближайшее действие</label><select name="type">${directionOptions('', true)}</select></div>
         <div class="field"><label>Куда везти</label><input required name="destination" placeholder="ХО, КТ, кабинет…" /></div>
         <div class="field"><label>Время ближайшего действия</label><input type="time" name="time" /></div>
@@ -1142,6 +1223,8 @@ function bind() {
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view; render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
   document.querySelectorAll('[data-department-filter]').forEach(el=>el.onclick=()=>{departmentFilter=el.dataset.departmentFilter; render(true);});
+  document.querySelectorAll('[data-contact-department]').forEach(el=>el.onclick=()=>{contactDepartmentFilter=el.dataset.contactDepartment; render(true);});
+  document.querySelectorAll('[data-contact-role]').forEach(el=>el.onclick=()=>{contactRoleFilter=el.dataset.contactRole; render(true);});
   document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(true); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
@@ -1226,6 +1309,22 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 
 async function handleAction(action, el, e) {
   if (action==='add') { modal={type:'quick'}; return render(); }
+  if (action==='contact-add') { modal={type:'contact',contact:null}; return render(); }
+  if (action==='contact-edit') { modal={type:'contact',contact:el.dataset.contact}; return render(); }
+  if (action==='contact-save') {
+    const form=document.getElementById('contact-form'); if(!form?.reportValidity()) return;
+    const fd=new FormData(form), value=normalizeContact({id:modal.contact||uid(),name:fd.get('name'),role:fd.get('role'),departmentId:fd.get('department'),phone:fd.get('phone'),note:fd.get('note')});
+    if(!value)return;
+    const index=getContacts().findIndex(item=>item.id===value.id);
+    if(index>=0) state.contacts[index]=value; else state.contacts.push(value);
+    modal=null; save(); return render();
+  }
+  if (action==='contact-delete') {
+    const contact=getContacts().find(item=>item.id===modal.contact); if(!contact)return;
+    const preserve=patient=>{ if(patient.doctorId===contact.id){ patient.doctorId='external'; patient.doctorName=patient.doctorName||contact.name; } };
+    state.patients.forEach(preserve); state.archive.forEach(shift=>(shift.patients||[]).forEach(preserve));
+    state.contacts=state.contacts.filter(item=>item.id!==contact.id); modal=null; save(); return render();
+  }
   if (action==='close') { modal=null; return render(); }
   if (action==='cloud-status') { view='settings'; return render(); }
   if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
@@ -1322,6 +1421,7 @@ async function handleAction(action, el, e) {
     state.settings.ownDepartmentId=validIds.has(modal.ownDepartmentId)?modal.ownDepartmentId:cleaned[0].id;
     state.patients.forEach(patient=>{ if(!validIds.has(patient.departmentId)) patient.departmentId=''; });
     state.archive.forEach(shift=>(shift.patients||[]).forEach(patient=>{ if(!validIds.has(patient.departmentId)) patient.departmentId=''; }));
+    state.contacts.forEach(contact=>{ if(!validIds.has(contact.departmentId)) contact.departmentId=''; });
     if(departmentFilter!=='all' && departmentFilter!=='none' && !validIds.has(departmentFilter)) departmentFilter='all';
     modal=null; save(); return render();
   }
@@ -1373,7 +1473,7 @@ async function handleAction(action, el, e) {
   if (action==='save-patient') {
     const form=document.getElementById('edit-patient-form'); if(!form.reportValidity()) return;
     const fd=new FormData(form), p=state.patients.find(p=>p.id===el.dataset.patient), step=currentStep(p);
-    p.surname=fd.get('surname').trim(); p.room=fd.get('room').trim(); p.departmentId=String(fd.get('department')||''); p.transport=fd.get('transport'); p.block=fd.get('block'); p.note=fd.get('note').trim();
+    p.surname=fd.get('surname').trim(); p.room=fd.get('room').trim(); p.departmentId=String(fd.get('department')||''); p.doctorId=String(fd.get('doctor')||''); p.doctorName=p.doctorId&&p.doctorId!=='external'?(getContacts().find(item=>item.id===p.doctorId)?.name||String(fd.get('doctor-name')||'').trim()):String(fd.get('doctor-name')||'').trim(); p.transport=fd.get('transport'); p.block=fd.get('block'); p.note=fd.get('note').trim();
     const urgent=fd.get('urgent')==='on';
     if(step) { step.urgent=urgent; step.time=fd.get('time') || ''; step.needsClarification=!p.room||!p.transport; }
     syncPatientPriority(p,urgent);
@@ -1476,7 +1576,8 @@ async function handleAction(action, el, e) {
     const form=document.getElementById('quick-form'); if(!form.reportValidity()) return;
     const fd=new FormData(form), type=fd.get('type'), urgent=fd.get('urgent')==='on';
     const title=fd.get('title').trim() || typeLabel(type);
-    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),block:'',transport:'',priority:'normal',pinned:false,steps:[{id:uid(),type,title,time:fd.get('time')||'',state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
+    const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
+    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:'',transport:'',priority:'normal',pinned:false,steps:[{id:uid(),type,title,time:fd.get('time')||'',state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
     state.patients.push(p); modal=null; save(); return render();
@@ -1487,7 +1588,8 @@ async function handleAction(action, el, e) {
     let types=fd.getAll('extra-direction').map(String); if(!types.includes(type))types.unshift(type);
     types=[...new Set(types)];
     const steps=types.map((t,i)=>({id:uid(),type:t,title:t===type?fd.get('destination'):typeLabel(t),time:i===0?(fd.get('time')||''):'',state:i===0?'active':'waiting',urgent:urgent&&i===0,needsClarification:!fd.get('room')||!fd.get('transport')}));
-    const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),block:fd.get('block'),transport:fd.get('transport'),priority:'normal',pinned:false,steps,note:fd.get('note'),events:[]};
+    const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
+    const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:fd.get('block'),transport:fd.get('transport'),priority:'normal',pinned:false,steps,note:fd.get('note'),events:[]};
     syncPatientPriority(p,urgent);
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня'); state.patients.push(p); modal=null; save(); return render();
   }
@@ -1519,7 +1621,8 @@ globalThis.__MEDFLOW_TEST__={
   fmtClock,durationBetween,operationElapsed,pickupTravelElapsed,operationTimersView,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
   resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView,preopChecklistView,
-  getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView
+  getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
+  normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard
 };
 setInterval(()=>{ if(document.querySelector('.timer')) render(true); },30000);
 window.addEventListener('online',()=>{
