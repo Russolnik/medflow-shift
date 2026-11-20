@@ -41,9 +41,8 @@ const DOCUMENT_STATUSES = ['taken', 'not_required'];
 const DEFAULT_WAIT_THRESHOLDS = { warningMinutes:60, criticalMinutes:120 };
 const UNDO_TIMEOUT = 8000;
 const CARE_FLAGS = [
-  {id:'extra_protection',icon:'☣',label:'Доп. меры защиты',hint:'Только по указанию медработника, без записи диагноза'},
-  {id:'hygiene_caution',icon:'◇',label:'Гигиеническая осторожность',hint:'Защита одежды, поверхности или оборудования'},
-  {id:'assisted_contact',icon:'⚠',label:'Повышенное внимание',hint:'Дезориентация, особенности поведения или нужен второй сотрудник'}
+  {id:'patient_attention',icon:'⚠',label:'Внимание к пациенту',hint:'Нужна повышенная внимательность или помощь второго сотрудника'},
+  {id:'extra_protection',icon:'☣',label:'Доп. меры защиты',hint:'Только по указанию медработника, без записи диагноза'}
 ];
 
 function uid() {
@@ -59,8 +58,9 @@ function clone(value) {
 }
 
 const seed = {
-  schemaVersion: 8,
+  schemaVersion: 9,
   shiftStartedAt: Date.now(),
+  incoming: [],
   patients: [
     {
       id: uid(), surname: 'Иванов', room: '6', departmentId: 'department-own', block: 'op', transport: 'Кресло', priority: 'operation', pinned: false,
@@ -317,7 +317,7 @@ function mergePatient(localPatient,remotePatient) {
   const remoteSteps=new Map((remotePatient.steps||[]).map(step=>[step.id,step]));
   const stepIds=[...new Set([...localSteps.keys(),...remoteSteps.keys()])];
   const events=[...(localPatient.events||[]),...(remotePatient.events||[])].filter((event,index,all)=>index===all.findIndex(item=>item.at===event.at&&item.text===event.text)).sort((a,b)=>(a.at||0)-(b.at||0));
-  const patientTime=patient=>Math.max(0,...(patient.steps||[]).map(stepTouchedAt),...(patient.events||[]).map(event=>Number(event.at)||0));
+  const patientTime=patient=>Math.max(0,Number(patient.inboxCreatedAt)||0,Number(patient.inboxResolvedAt)||0,...(patient.steps||[]).map(stepTouchedAt),...(patient.events||[]).map(event=>Number(event.at)||0));
   const preferred=patientTime(remotePatient)>patientTime(localPatient)?remotePatient:localPatient;
   return {...clone(localPatient),...clone(remotePatient),...clone(preferred),steps:stepIds.map(id=>mergeStep(localSteps.get(id),remoteSteps.get(id))),events};
 }
@@ -326,11 +326,14 @@ function mergeStates(localState,remoteState) {
   const localPatients=new Map(local.patients.map(patient=>[patient.id,patient]));
   const remotePatients=new Map(remote.patients.map(patient=>[patient.id,patient]));
   const patientIds=[...new Set([...localPatients.keys(),...remotePatients.keys()])];
+  const localIncoming=new Map(local.incoming.map(patient=>[patient.id,patient]));
+  const remoteIncoming=new Map(remote.incoming.map(patient=>[patient.id,patient]));
+  const incomingIds=[...new Set([...localIncoming.keys(),...remoteIncoming.keys()])];
   const archives=[...(remote.archive||[]),...(local.archive||[])].filter((shift,index,all)=>index===all.findIndex(item=>item.id===shift.id));
   const directions=[...(local.directions||[]),...(remote.directions||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
   const departments=[...(local.departments||[]),...(remote.departments||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
   const contacts=[...(local.contacts||[]),...(remote.contacts||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
-  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),archive:archives,directions,departments,contacts});
+  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),incoming:incomingIds.map(id=>mergePatient(localIncoming.get(id),remoteIncoming.get(id))),archive:archives,directions,departments,contacts});
 }
 function backupEnvelope() {
   return {format:'medflow-backup',version:1,exportedAt:new Date().toISOString(),state:clone(state)};
@@ -387,7 +390,7 @@ function normalizePatient(patient) {
   patient.doctorName = String(patient.doctorName || '');
   patient.block = ['gxo','xo','op'].includes(patient.block) ? 'op' : patient.block === 'angio' ? 'angio' : '';
   const allowedFlags=new Set(CARE_FLAGS.map(item=>item.id));
-  patient.careFlags=Array.isArray(patient.careFlags)?[...new Set(patient.careFlags.filter(flag=>allowedFlags.has(flag)))]:[];
+  patient.careFlags=Array.isArray(patient.careFlags)?[...new Set(patient.careFlags.map(flag=>['hygiene_caution','assisted_contact'].includes(flag)?'patient_attention':flag).filter(flag=>allowedFlags.has(flag)))]:[];
   return patient;
 }
 function normalizeContact(contact) {
@@ -406,8 +409,9 @@ function inferShiftStart(patients) {
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
   const incomingVersion = Number(next.schemaVersion) || 1;
-  next.schemaVersion = 8;
+  next.schemaVersion = 9;
   next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
+  next.incoming = Array.isArray(next.incoming) ? next.incoming.map(normalizePatient).filter(Boolean) : [];
   next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
   next.archive = Array.isArray(next.archive) ? next.archive.filter(shift => shift && typeof shift === 'object') : [];
   next.archive.forEach(shift => {
@@ -432,6 +436,7 @@ function normalizeState(value) {
   if (!next.departments.some(item => item.id === next.settings.ownDepartmentId)) next.settings.ownDepartmentId = next.departments[0].id;
   const validDepartmentIds = new Set(next.departments.map(item => item.id));
   next.patients.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; });
+  next.incoming.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; });
   next.archive.forEach(shift => shift.patients.forEach(patient => { if (!validDepartmentIds.has(patient.departmentId)) patient.departmentId = ''; }));
   next.contacts = Array.isArray(next.contacts) ? next.contacts.map(normalizeContact).filter(Boolean) : [];
   next.contacts.forEach(contact => { if(!validDepartmentIds.has(contact.departmentId)) contact.departmentId=''; });
@@ -511,6 +516,9 @@ function readTimeChoice(fd,name='time') {
 function timeChoice(name='time',step={},label='Время') {
   const flexible=Boolean(step?.timeFlexible&&!step?.time);
   return `<div class="field time-choice"><label>${esc(label)}</label><div class="time-choice-row"><input type="text" inputmode="numeric" name="${esc(name)}" value="${esc(step?.time||'')}" placeholder="08:30" pattern="(?:[01]?\\d|2[0-3]):[0-5]\\d" ${flexible?'disabled':''} data-time-input="${esc(name)}" /><label class="no-time"><input type="checkbox" name="${esc(name)}-none" data-time-none="${esc(name)}" ${flexible?'checked':''}/><span>Без времени</span></label></div></div>`;
+}
+function entryTargetChoice(selected='queue') {
+  return `<fieldset class="entry-target full"><legend>Куда добавить</legend><div><label><input type="radio" name="entry-target" value="queue" ${selected!=='inbox'?'checked':''}/><span><b>В очередь</b><small>Сразу появится на главной</small></span></label><label><input type="radio" name="entry-target" value="inbox" ${selected==='inbox'?'checked':''}/><span><b>В Новое</b><small>Сначала потребуется принять</small></span></label></div></fieldset>`;
 }
 function careFlagsView(selected=[]) {
   const active=new Set(selected||[]);
@@ -692,7 +700,7 @@ function addButtonPosition(settings=state.settings) {
   return ADD_BUTTON_POSITIONS.includes(settings?.addButtonPosition) ? settings.addButtonPosition : 'floating';
 }
 function showFloatingAdd(currentView=view, settings=state.settings) {
-  return ['today','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
+  return ['today','inbox','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
 }
 function captureViewPosition() {
   const filters=Array.from(document.querySelectorAll?.('.filters') || []);
@@ -767,11 +775,12 @@ function render(preservePosition=false) {
     <main class="shell">
       ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
-      ${view === 'today' ? todayView(active, completed) : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
+      ${view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
     </main>
     ${showFloatingAdd() ? '<button class="fab" data-action="add" aria-label="Записать пациента">＋</button>' : ''}
     <nav class="nav">
       ${navButton('today','⌂','Сегодня')}
+      ${navButton('inbox','＋','Новое',pendingIncoming().length)}
       ${navButton('directions','⌘','Направления')}
       ${navButton('contacts','☎','Контакты')}
       ${navButton('history','↶','История')}
@@ -789,12 +798,12 @@ function undoView() {
   return undoEntry ? `<div class="undo-toast" role="status"><span>${esc(undoEntry.label)}</span><button data-action="undo-last">Отменить</button></div>` : '';
 }
 
-function navButton(id, icon, text) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}</button>`; }
+function navButton(id, icon, text, count=0) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}${count?`<i class="nav-count">${count>99?'99+':count}</i>`:''}</button>`; }
 function topbarView() {
   const inlineAdd = addButtonPosition() === 'inline';
   if (view !== 'today') {
-    const title = view === 'directions' ? 'Направления' : view === 'contacts' ? 'Контакты' : view === 'history' ? 'История' : 'Настройки';
-    return `<header class="topbar section-topbar"><h1>${title}</h1>${view==='directions'&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
+    const title = view === 'inbox' ? 'Новое' : view === 'directions' ? 'Направления' : view === 'contacts' ? 'Контакты' : view === 'history' ? 'История' : 'Настройки';
+    return `<header class="topbar section-topbar"><h1>${title}</h1>${['inbox','directions'].includes(view)&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
   }
   const progress = shiftProgress(state.patients);
   const taskPercent = value => progress.tasks.total ? (value / progress.tasks.total * 100).toFixed(2) : 0;
@@ -841,6 +850,7 @@ function todayView(active, completed) {
   const queuedPatients = visibleActive.filter(p => !engagedPatients.includes(p));
   const engaged = engagedPatients.length;
   return `
+    ${pendingIncoming().length?`<button class="inbox-banner" data-view="inbox"><span><b>${pendingIncoming().length}</b><i>Новые поручения</i></span><strong>Посмотреть →</strong></button>`:''}
     ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
     ${departmentFiltersView()}
     ${engagedPatients.length ? `
@@ -860,6 +870,28 @@ function todayView(active, completed) {
     </button>
     ${showCompleted ? `<div class="patient-list" style="margin-top:10px">${visibleCompleted.map(compactPatientCard).join('') || '<div class="empty">Пока ничего</div>'}</div>` : ''}
   `;
+}
+
+function pendingIncoming() {
+  return (state.incoming||[]).filter(patient=>(patient.inboxStatus||'pending')==='pending').sort((a,b)=>{
+    const urgentA=Boolean(currentStep(a)?.urgent), urgentB=Boolean(currentStep(b)?.urgent);
+    return Number(urgentB)-Number(urgentA)||(Number(a.inboxCreatedAt)||0)-(Number(b.inboxCreatedAt)||0);
+  });
+}
+function incomingCard(patient) {
+  const step=currentStep(patient), urgent=Boolean(step?.urgent);
+  return `<article class="incoming-card ${urgent?'urgent':''}">
+    <div class="incoming-head"><div><div class="patient-name">${esc(patient.surname)} <span class="patient-room">· п.${esc(patient.room||'?')}</span></div><small>${esc(departmentLabel(patient.departmentId))}${patient.inboxCreatedAt?` · ${fmtClock(patient.inboxCreatedAt)}`:''}</small></div>${urgent?'<span class="badge urgent">СРОЧНО</span>':''}</div>
+    <div class="incoming-task"><span>Поручение</span><b>${esc(step?.title||'Уточнить')}</b>${stepTimeLabel(step)?`<small>${esc(stepTimeLabel(step))}</small>`:''}</div>
+    ${patientCareFlags(patient).length?`<div class="care-flag-badges">${patientCareFlags(patient).map(item=>`<span>${item.icon} ${esc(item.label)}</span>`).join('')}</div>`:''}
+    <div class="incoming-actions"><button class="primary-btn" data-action="accept-incoming" data-patient="${patient.id}">Принять в очередь</button><button class="secondary-btn" data-action="reject-incoming" data-patient="${patient.id}">Отклонить</button></div>
+  </article>`;
+}
+function inboxView() {
+  const incoming=pendingIncoming();
+  return `<section class="inbox-intro"><p>Сюда можно отправить запись с поста или оставить её себе на подтверждение.</p></section>
+    <div class="section-head"><h2>Ожидают решения</h2><span>${incoming.length}</span></div>
+    <div class="patient-list">${incoming.length?incoming.map(incomingCard).join(''):'<div class="empty">Новых поручений нет</div>'}</div>`;
 }
 
 function directionsView() {
@@ -1266,6 +1298,7 @@ function modalView() {
     return `<div class="modal-backdrop" data-action="close"><section class="modal quick-modal" onclick="event.stopPropagation()">
       <h2>Быстрая запись</h2><p class="modal-sub">Сейчас — только главное. Маршрут можно дополнить позже.</p>
       <form id="quick-form" class="quick-form">
+        ${entryTargetChoice(modal.target)}
         <div class="field"><label>Фамилия</label><input required name="surname" placeholder="Иванов" autofocus /></div>
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно позже" /></div>
         <div class="field"><label>Отделение</label><select name="department">${departmentOptions(ownDepartmentId())}</select></div>
@@ -1275,6 +1308,7 @@ function modalView() {
         ${timeChoice('time',{},'Время')}
         <div class="field operation-field" data-operation-field hidden><label>Оперблок</label><select name="block"><option value="">Не указан</option><option value="op">Оперблок (ОПРБЛК)</option><option value="angio">Ангиоблок (АНГБЛК)</option></select></div>
         <label class="urgent-toggle"><input type="checkbox" name="urgent" /><span><b>Срочно</b><small>Поднять поручение наверх</small></span></label>
+        <div class="field full">${careFlagsView()}</div>
       </form>
       <div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="submit-quick">Записать</button></div>
     </section></div>`;
@@ -1285,6 +1319,7 @@ function modalView() {
       <h2>${urgent?'Срочное поручение':'Новый пациент'}</h2><p class="modal-sub">Только вымышленные данные для проверки прототипа</p>
       <form id="patient-form" class="form-grid">
         <input type="hidden" name="urgent" value="${urgent?'1':'0'}" />
+        ${entryTargetChoice(modal.target)}
         <div class="field"><label>Фамилия / условное имя</label><input required name="surname" placeholder="Например, Иванов" autofocus /></div>
         <div class="field"><label>Палата</label><input name="room" placeholder="Можно уточнить позже" /></div>
         <div class="field"><label>Отделение</label><select name="department">${departmentOptions(ownDepartmentId())}</select></div>
@@ -1469,7 +1504,7 @@ async function handleAction(action, el, e) {
     if(!undoEntry)return;
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
   }
-  if (action==='add') { modal={type:'quick'}; return render(true); }
+  if (action==='add') { modal={type:'quick',target:view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='contact-add') { modal={type:'contact',contact:null}; return render(true); }
   if (action==='contact-edit') { modal={type:'contact',contact:el.dataset.contact}; return render(true); }
   if (action==='contact-save') {
@@ -1771,10 +1806,13 @@ async function handleAction(action, el, e) {
     const fd=new FormData(form), type=fd.get('type'), urgent=fd.get('urgent')==='on', chosenTime=readTimeChoice(fd);
     const title=fd.get('title').trim() || typeLabel(type);
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
-    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:type==='operation'?String(fd.get('block')||''):'',transport:'',priority:'normal',pinned:false,careFlags:[],steps:[{id:uid(),type,title,time:chosenTime.time,timeFlexible:chosenTime.timeFlexible,state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
+    const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:type==='operation'?String(fd.get('block')||''):'',transport:'',priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps:[{id:uid(),type,title,time:chosenTime.time,timeFlexible:chosenTime.timeFlexible,state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
     syncPatientPriority(p,urgent);
+    const target=fd.get('entry-target')==='inbox'?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
-    state.patients.push(p); modal=null; save(); return render();
+    if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
+    else state.patients.push(p);
+    modal=null; save(); return render();
   }
   if (action==='submit-patient') {
     const form=document.getElementById('patient-form'); if(!form.reportValidity()) return;
@@ -1785,7 +1823,22 @@ async function handleAction(action, el, e) {
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:types.includes('operation')?String(fd.get('block')||''):'',transport:fd.get('transport'),priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps,note:fd.get('note'),events:[]};
     syncPatientPriority(p,urgent);
-    log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня'); state.patients.push(p); modal=null; save(); return render();
+    const target=fd.get('entry-target')==='inbox'?'inbox':'queue';
+    log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня');
+    if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
+    else state.patients.push(p);
+    modal=null; save(); return render();
+  }
+  if (action==='accept-incoming' || action==='reject-incoming') {
+    const patient=state.incoming.find(item=>item.id===el.dataset.patient); if(!patient)return;
+    armUndo(action==='accept-incoming'?'Поручение принято в очередь':'Поручение отклонено');
+    const now=Date.now();
+    if(action==='accept-incoming') {
+      patient.inboxStatus='accepted'; patient.inboxResolvedAt=now;
+      const accepted=clone(patient); delete accepted.inboxStatus; delete accepted.inboxCreatedAt; delete accepted.inboxResolvedAt;
+      log(accepted,'Принято из раздела «Новое»'); state.patients.push(accepted);
+    } else { patient.inboxStatus='rejected'; patient.inboxResolvedAt=now; log(patient,'Отклонено во входящих'); }
+    save(); return render(true);
   }
   if (action==='handoff') { modal={type:'documents',mode:'handoff',patient:el.dataset.patient}; return render(); }
   if (['cancel-step','postpone-step'].includes(action)) {
@@ -1822,6 +1875,7 @@ globalThis.__MEDFLOW_TEST__={
   normalizeTimeInput,stepTimeLabel,patientCareFlags
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
+setInterval(()=>{ if(!modal && cloud.session && navigator.onLine && !cloud.syncing) syncCloudState(); },20000);
 window.addEventListener('online',()=>{
   cloud.status=cloud.session?'pending':'local';
   cloud.message=cloud.session?'Сеть появилась, синхронизируем…':'';

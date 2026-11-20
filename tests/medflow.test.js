@@ -154,7 +154,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 8);
+  assert.equal(migrated.schemaVersion, 9);
+  assert.ok(Array.isArray(migrated.incoming));
   assert.ok(migrated.departments.length >= 1);
   assert.ok(Array.isArray(migrated.contacts));
   assert.equal(migrated.settings.ownDepartmentId, migrated.departments[0].id);
@@ -230,8 +231,16 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
     patients:[{id:'flags',surname:'Иванов',careFlags:['extra_protection','diagnosis-hiv','assisted_contact'],steps:[],events:[]}],
     archive:[],directions:[{id:'operation',label:'Операция'}]
   });
-  assert.deepEqual([...normalized.patients[0].careFlags],['extra_protection','assisted_contact']);
-  assert.deepEqual([...api.patientCareFlags(normalized.patients[0]).map(item=>item.id)],['extra_protection','assisted_contact']);
+  assert.deepEqual([...normalized.patients[0].careFlags],['extra_protection','patient_attention']);
+  assert.deepEqual([...api.patientCareFlags(normalized.patients[0]).map(item=>item.id)],['patient_attention','extra_protection']);
+}
+
+{
+  const normalized=api.normalizeState({
+    patients:[], incoming:[{id:'new-one',surname:'Новый',room:'2',inboxStatus:'pending',steps:[step('КТ','active','ct')],events:[]}], archive:[]
+  });
+  assert.equal(normalized.incoming.length,1);
+  assert.equal(normalized.incoming[0].surname,'Новый');
 }
 
 {
@@ -526,12 +535,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v34"));
+  assert.ok(sw.includes("medflow-shell-v35"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=34');
+  assert.equal(manifest.start_url,'./?pwa=35');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -545,7 +554,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
   assert.ok(appRoot.innerHTML.includes('class="fab"'));
   assert.ok(appRoot.innerHTML.includes('data-view="settings"'));
-  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 5);
+  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 6);
+  assert.ok(appRoot.innerHTML.includes('data-view="inbox"'));
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
 }
@@ -585,6 +595,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('Без времени'));
   assert.ok(source.includes('data-operation-field'));
   assert.ok(source.includes('Доп. меры защиты'));
+  assert.ok(source.includes('Внимание к пациенту'));
+  assert.ok(!source.includes('Гигиеническая осторожность'));
+  assert.ok(source.includes('data-action="accept-incoming"'));
+  assert.ok(source.includes('name="entry-target"'));
+  assert.ok(source.includes('},20000);'));
   assert.ok(source.includes('hasOpenWorkForm()'));
   assert.ok(!source.includes('type="time"'));
   assert.ok(source.includes("searchBox('patient-search'"));
