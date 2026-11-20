@@ -154,7 +154,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 7);
+  assert.equal(migrated.schemaVersion, 8);
   assert.ok(migrated.departments.length >= 1);
   assert.ok(Array.isArray(migrated.contacts));
   assert.equal(migrated.settings.ownDepartmentId, migrated.departments[0].id);
@@ -212,6 +212,26 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.parseTime('23:59'), 1439);
   assert.equal(api.parseTime('24:00'), null);
   assert.equal(api.parseTime(''), null);
+}
+
+{
+  assert.equal(api.normalizeTimeInput('8:30'), '08:30');
+  assert.equal(api.normalizeTimeInput('18.05'), '18:05');
+  assert.equal(api.normalizeTimeInput('24:00'), '');
+  assert.equal(api.normalizeTimeInput('примерно утром'), '');
+  assert.equal(api.stepTimeLabel({time:'09:10'}), '09:10');
+  assert.equal(api.stepTimeLabel({time:'',timeFlexible:true}), 'Без времени');
+  const flexible={surname:'Иванов',room:'1',transport:'Кресло',steps:[{...step('УЗИ','active','ultrasound'),timeFlexible:true}]};
+  assert.deepEqual([...api.patientMissingFields(flexible)],[]);
+}
+
+{
+  const normalized=api.normalizeState({
+    patients:[{id:'flags',surname:'Иванов',careFlags:['extra_protection','diagnosis-hiv','assisted_contact'],steps:[],events:[]}],
+    archive:[],directions:[{id:'operation',label:'Операция'}]
+  });
+  assert.deepEqual([...normalized.patients[0].careFlags],['extra_protection','assisted_contact']);
+  assert.deepEqual([...api.patientCareFlags(normalized.patients[0]).map(item=>item.id)],['extra_protection','assisted_contact']);
 }
 
 {
@@ -506,12 +526,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v33"));
+  assert.ok(sw.includes("medflow-shell-v34"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=33');
+  assert.equal(manifest.start_url,'./?pwa=34');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -560,6 +580,13 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes("angio:'АНГБЛК'"));
   assert.ok(source.includes("hasTodayOperation(p)?'operation-today'"));
   assert.ok(source.includes('data-action="undo-last"'));
+  assert.ok(source.includes('data-action="rollback-status"'));
+  assert.ok(source.includes("modal.type === 'confirm-transition'"));
+  assert.ok(source.includes('Без времени'));
+  assert.ok(source.includes('data-operation-field'));
+  assert.ok(source.includes('Доп. меры защиты'));
+  assert.ok(source.includes('hasOpenWorkForm()'));
+  assert.ok(!source.includes('type="time"'));
   assert.ok(source.includes("searchBox('patient-search'"));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
