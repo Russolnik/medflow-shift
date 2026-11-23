@@ -528,7 +528,8 @@ function timeChoice(name='time',step={},label='Время') {
   const flexible=Boolean(step?.timeFlexible&&!step?.time);
   return `<div class="field time-choice"><label>${esc(label)}</label><div class="time-choice-row"><input type="time" step="300" name="${esc(name)}" value="${esc(step?.time||'')}" ${flexible?'disabled':''} data-time-input="${esc(name)}" /><div class="time-choice-actions"><button type="button" class="time-now" data-time-now="${esc(name)}">Сейчас</button><label class="no-time"><input type="checkbox" name="${esc(name)}-none" data-time-none="${esc(name)}" ${flexible?'checked':''}/><span>Без времени</span></label></div></div></div>`;
 }
-function entryTargetChoice(selected='queue') {
+function entryTargetChoice(selected='queue', mode=workMode()) {
+  if(mode==='team') return `<div class="entry-target team-entry-target full"><input type="hidden" name="entry-target" value="inbox" /><span><b>Добавится в «Новое»</b><small>В командной смене поручение сначала подтверждается, чтобы два сотрудника не взяли его одновременно.</small></span></div>`;
   return `<fieldset class="entry-target full"><legend>Куда добавить</legend><div><label><input type="radio" name="entry-target" value="queue" ${selected!=='inbox'?'checked':''}/><span><b>В очередь</b><small>Сразу появится на главной</small></span></label><label><input type="radio" name="entry-target" value="inbox" ${selected==='inbox'?'checked':''}/><span><b>В Новое</b><small>Сначала потребуется принять</small></span></label></div></fieldset>`;
 }
 function careFlagsView(selected=[]) {
@@ -954,10 +955,15 @@ function inboxView() {
 
 function directionsView() {
   const dirs = [...getDirections(), {id:'other',label:'Другое'}];
+  const quickIndex=dirs.map(item=>{
+    const count=state.patients.filter(patient=>patientMatchesDepartment(patient)&&patientMatchesSearch(patient)&&directionPatientStatus(patient,item.id)).length;
+    return `<button data-scroll-direction="${esc(item.id)}"><span>${esc(item.label)}</span><b>${count}</b></button>`;
+  }).join('');
   return `
     ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
     <div class="section-head directions-head"><div><h2>Реестр направлений</h2><span>раскрой нужную группу</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     ${departmentFiltersView()}
+    <div id="directions-index" class="directions-quick-index" aria-label="Быстрый переход по направлениям"><button class="directions-home" data-action="directions-home">Начало</button>${quickIndex}</div>
     <div class="direction-registry">${dirs.map(directionRegistryGroup).join('')}</div>
   `;
 }
@@ -974,7 +980,7 @@ function directionRegistryGroup(item) {
   const waiting=patients.filter(patient=>directionPatientStatus(patient,item.id)==='waiting');
   const handled=patients.filter(patient=>directionPatientStatus(patient,item.id)==='handled');
   const content=(title,list,kind)=>`<section class="registry-section ${kind}"><div class="registry-section-head"><b>${title}</b><span>${list.length}</span></div>${list.length?`<div class="patient-list">${list.map(compactPatientCard).join('')}</div>`:'<div class="registry-empty">Нет</div>'}</section>`;
-  return `<details class="direction-group ${patients.length?'has-items':''}" ${item.id==='operation'&&patients.length?'open':''}>
+  return `<details id="direction-${esc(item.id)}" class="direction-group ${patients.length?'has-items':''}" data-direction-group="${esc(item.id)}" ${item.id==='operation'&&patients.length?'open':''}>
     <summary><div><span class="direction-mark ${esc(item.id)}" aria-hidden="true"></span><b>${esc(item.label)}</b></div><span class="direction-total">${patients.length}</span><i class="toggle-chevron" aria-hidden="true"></i></summary>
     <div class="direction-group-body">${content('В работе',working,'working')}${content('Ожидают',waiting,'waiting')}${content('Обработано',handled,'handled')}</div>
   </details>`;
@@ -1473,6 +1479,12 @@ function modalView() {
 function bind() {
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;modal=null;render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
+  document.querySelectorAll('[data-scroll-direction]').forEach(el=>el.onclick=()=>{
+    const group=document.querySelector(`[data-direction-group="${CSS.escape(el.dataset.scrollDirection)}"]`);
+    if(!group)return;
+    group.open=true;
+    group.scrollIntoView({behavior:'smooth',block:'start'});
+  });
   document.querySelectorAll('[data-department-filter]').forEach(el=>el.onclick=()=>{departmentFilter=el.dataset.departmentFilter; render(true);});
   document.querySelectorAll('[data-contact-department]').forEach(el=>el.onclick=()=>{contactDepartmentFilter=el.dataset.contactDepartment; render(true);});
   document.querySelectorAll('[data-contact-role]').forEach(el=>el.onclick=()=>{contactRoleFilter=el.dataset.contactRole; render(true);});
@@ -1592,8 +1604,9 @@ async function handleAction(action, el, e) {
     if(!undoEntry)return;
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
   }
-  if (action==='add') { modal={type:'quick',target:view==='inbox'?'inbox':'queue'}; return render(true); }
+  if (action==='add') { modal={type:'quick',target:workMode()==='team'||view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
+  if (action==='directions-home') { document.querySelector('.section-topbar')?.scrollIntoView({behavior:'smooth',block:'start'}); return; }
   if (action==='set-work-mode') {
     state.settings.workMode=el.dataset.mode==='team'?'team':'solo';
     save();
@@ -1904,7 +1917,7 @@ async function handleAction(action, el, e) {
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:type==='operation'?String(fd.get('block')||''):'',transport:'',priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps:[{id:uid(),type,title,time:chosenTime.time,timeFlexible:chosenTime.timeFlexible,state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
     syncPatientPriority(p,urgent);
-    const target=fd.get('entry-target')==='inbox'?'inbox':'queue';
+    const target=workMode()==='team'||fd.get('entry-target')==='inbox'?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
     if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
     else state.patients.push(p);
@@ -1919,7 +1932,7 @@ async function handleAction(action, el, e) {
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:types.includes('operation')?String(fd.get('block')||''):'',transport:fd.get('transport'),priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps,note:fd.get('note'),events:[]};
     syncPatientPriority(p,urgent);
-    const target=fd.get('entry-target')==='inbox'?'inbox':'queue';
+    const target=workMode()==='team'||fd.get('entry-target')==='inbox'?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня');
     if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
     else state.patients.push(p);
@@ -1968,7 +1981,7 @@ globalThis.__MEDFLOW_TEST__={
   getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
-  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView
+  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
 setInterval(()=>{ if(!modal && cloud.session && navigator.onLine && !cloud.syncing) syncCloudState(); },20000);
