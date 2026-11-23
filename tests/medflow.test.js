@@ -184,7 +184,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.patientMatchesDepartment({departmentId:''}, 'none'), true);
   assert.equal(api.patientMatchesDepartment({departmentId:'department-own'}, 'department-own'), true);
   assert.ok(api.departmentOptions('department-own').includes('наше'));
-  assert.ok(api.departmentFiltersView().includes('data-department-filter'));
+  const departmentFilterView=api.departmentFiltersView();
+  assert.ok(departmentFilterView.includes('<select data-department-filter'));
+  assert.ok(departmentFilterView.includes('value="department-own" selected'));
 }
 
 {
@@ -535,12 +537,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v40"));
+  assert.ok(sw.includes("medflow-shell-v41"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=40');
+  assert.equal(manifest.start_url,'./?pwa=41');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }

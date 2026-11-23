@@ -93,7 +93,7 @@ const seed = {
 let state = load();
 let view = 'today';
 let direction = 'all';
-let departmentFilter = 'all';
+let departmentFilter = ownDepartmentId();
 let contactDepartmentFilter = 'all';
 let contactRoleFilter = 'all';
 let patientSearch = '';
@@ -1042,8 +1042,8 @@ function syncPillView() {
   return `<button class="sync-pill ${esc(status)}" data-action="cloud-status" title="${esc(cloud.message||cloudStatusLabel())}"><i aria-hidden="true"></i><span>${labels[status]||'Облако'}${time}</span></button>`;
 }
 function departmentFiltersView() {
-  const filters = [{id:'all',label:'Все'}, ...getDepartments(), {id:'none',label:'Не указано'}];
-  return `<div class="department-filter-wrap"><span>Отделение</span><div class="filters department-filters">${filters.map(item=>`<button class="chip ${departmentFilter===item.id?'active':''}" data-department-filter="${esc(item.id)}">${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</button>`).join('')}</div></div>`;
+  const filters = [...getDepartments(), {id:'all',label:'Все отделения'}, {id:'none',label:'Не указано'}];
+  return `<label class="department-filter-wrap"><span>Отделение</span><span class="department-select"><select data-department-filter aria-label="Фильтр по отделению">${filters.map(item=>`<option value="${esc(item.id)}" ${departmentFilter===item.id?'selected':''}>${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</option>`).join('')}</select><i aria-hidden="true"></i></span></label>`;
 }
 function todayView(active, completed) {
   const visibleActive = active.filter(patient => patientMatchesDepartment(patient) && patientMatchesSearch(patient));
@@ -1109,7 +1109,7 @@ function directionsView() {
     ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
     <div class="section-head directions-head"><div><h2>Реестр направлений</h2><span>раскрой нужную группу</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     ${departmentFiltersView()}
-    <div id="directions-index" class="directions-quick-index" aria-label="Быстрый переход по направлениям"><button class="directions-home" data-action="directions-home">Начало</button>${quickIndex}</div>
+    <div id="directions-index" class="directions-quick-index" aria-label="Быстрый переход по направлениям">${quickIndex}</div>
     <div class="direction-registry">${dirs.map(directionRegistryGroup).join('')}</div>
   `;
 }
@@ -1671,7 +1671,7 @@ function bind() {
     group.open=true;
     group.scrollIntoView({behavior:'smooth',block:'start'});
   });
-  document.querySelectorAll('[data-department-filter]').forEach(el=>el.onclick=()=>{departmentFilter=el.dataset.departmentFilter; render(true);});
+  document.querySelectorAll('select[data-department-filter]').forEach(el=>el.onchange=()=>{departmentFilter=el.value; render(true);});
   document.querySelectorAll('[data-contact-department]').forEach(el=>el.onclick=()=>{contactDepartmentFilter=el.dataset.contactDepartment; render(true);});
   document.querySelectorAll('[data-contact-role]').forEach(el=>el.onclick=()=>{contactRoleFilter=el.dataset.contactRole; render(true);});
   const patientSearchInput=document.getElementById('patient-search');
@@ -1813,7 +1813,6 @@ async function handleAction(action, el, e) {
   }
   if (action==='add') { modal={type:'quick',target:workMode()==='team'||view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
-  if (action==='directions-home') { document.querySelector('.section-topbar')?.scrollIntoView({behavior:'smooth',block:'start'}); return; }
   if (action==='set-work-mode') {
     if(activeTeamShift()&&el.dataset.mode!=='team') { cloud.message='Сначала покинь общую смену в настройках'; view='settings'; modal=null; return render(true); }
     state.settings.workMode=el.dataset.mode==='team'?'team':'solo';
@@ -1990,7 +1989,7 @@ async function handleAction(action, el, e) {
     state.patients.forEach(patient=>{ if(!validIds.has(patient.departmentId)) patient.departmentId=''; });
     state.archive.forEach(shift=>(shift.patients||[]).forEach(patient=>{ if(!validIds.has(patient.departmentId)) patient.departmentId=''; }));
     state.contacts.forEach(contact=>{ if(!validIds.has(contact.departmentId)) contact.departmentId=''; });
-    if(departmentFilter!=='all' && departmentFilter!=='none' && !validIds.has(departmentFilter)) departmentFilter='all';
+    if(departmentFilter!=='all' && departmentFilter!=='none' && !validIds.has(departmentFilter)) departmentFilter=ownDepartmentId();
     modal=null; save(); return render(true);
   }
   if (action==='manage-directions') { modal={type:'directions',directions:clone(getDirections()),error:''}; return render(true); }
