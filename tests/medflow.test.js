@@ -535,12 +535,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v39"));
+  assert.ok(sw.includes("medflow-shell-v40"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=39');
+  assert.equal(manifest.start_url,'./?pwa=40');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -623,6 +623,15 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
+  const local={id:'team-patient',surname:'Иванов',room:'1',assignedTo:'worker-a',assignedToName:'Анна',updatedAt:100,steps:[{id:'s',title:'КТ',type:'ct',state:'active'}],events:[]};
+  const remote={id:'team-patient',surname:'Иванов',room:'1',assignedTo:'worker-b',assignedToName:'Михаил',updatedAt:200,steps:[{id:'s',title:'КТ',type:'ct',state:'in_progress',startedAt:200}],events:[{id:'e',at:200,text:'Взят в работу',by:'worker-b',byName:'Михаил'}]};
+  const merged=api.mergePatient(local,remote);
+  assert.equal(merged.assignedTo,'worker-b');
+  assert.equal(merged.assignedToName,'Михаил');
+  assert.equal(merged.events.length,1);
+}
+
+{
   const backup=api.backupEnvelope();
   assert.equal(backup.format,'medflow-backup');
   assert.equal(backup.version,1);
@@ -653,6 +662,25 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(migration.includes('medflow_shift_members'));
   assert.ok(migration.includes('medflow_create_shift_invite'));
   assert.ok(migration.includes("role in ('owner','orderly','nurse','viewer')"));
+}
+
+{
+  const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','003_shared_shift_safe_sync.sql'),'utf8');
+  assert.ok(migration.includes('medflow_update_shift'));
+  assert.ok(migration.includes('for update'));
+  assert.ok(migration.includes('medflow_shift_claims'));
+  assert.ok(migration.includes('medflow_claim_patient'));
+  assert.ok(migration.includes('medflow_transfer_patient'));
+  assert.ok(migration.includes('medflow_release_patient'));
+  assert.ok(source.includes('data-action="team-create-open"'));
+  assert.ok(source.includes('data-action="team-join-open"'));
+  assert.ok(source.includes('data-action="team-invite-create"'));
+  assert.ok(source.includes('data-action="team-handoff-confirm"'));
+  assert.ok(source.includes('Добавил:'));
+  assert.ok(source.includes('Принял:'));
+  assert.ok(source.includes('В работе у:'));
+  assert.ok(source.includes("['owner','orderly'].includes(teamRole())"));
+  assert.ok(source.includes("['owner','orderly','nurse'].includes(teamRole())"));
 }
 
 console.log('MedFlow: все сценарии пройдены');

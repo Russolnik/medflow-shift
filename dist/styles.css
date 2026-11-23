@@ -291,6 +291,10 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .team-entry-target { padding:10px 11px; border:1px solid rgba(151,187,170,.20); border-radius:12px; background:rgba(112,168,143,.045); }
 .team-entry-target > span b { color:#dbe5e1; font-size:11px; }
 .team-entry-target > span small { margin-top:4px; color:#96a6a2; font-size:9px; line-height:1.4; }
+.team-patient-meta { display:flex; flex-wrap:wrap; gap:5px 10px; padding:7px 13px 0; color:#899692; font-size:11px; }
+.team-patient-meta span { white-space:nowrap; }
+.team-patient-meta .assigned { color:#cddbd6; font-weight:750; }
+.inbox-role-note { margin:10px 0 0; color:var(--muted); font-size:12px; }
 .inbox-banner { width:100%; min-height:48px; margin-bottom:12px; padding:9px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid rgba(208,220,222,.16); border-radius:14px; color:var(--text); background:rgba(255,255,255,.022); cursor:pointer; }
 .inbox-banner span { display:flex; align-items:center; gap:8px; }
 .inbox-banner b { min-width:25px; height:25px; display:grid; place-items:center; border-radius:8px; color:#11171a; background:#dbe4e5; font-size:11px; }
@@ -433,6 +437,24 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .settings-card-head h2 { font-size:14px; }
 .settings-card-head span { color:var(--muted); font-size:10px; text-align:right; }
 .settings-card > p { color:var(--muted); font-size:10px; line-height:1.45; margin:7px 0 11px; }
+.team-settings-card.active { border-color:rgba(151,187,170,.22); }
+.team-members { display:grid; gap:6px; margin:11px 0; }
+.team-member { min-height:46px; padding:8px 9px; display:flex; align-items:center; justify-content:space-between; gap:10px; border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.018); }
+.team-member > div { display:grid; gap:2px; }
+.team-member b { font-size:13px; }
+.team-member span { color:var(--muted); font-size:11px; }
+.team-member button { min-height:34px; padding:6px 10px; }
+.invite-code { margin:10px 0; padding:11px; display:grid; grid-template-columns:1fr auto; gap:5px 10px; align-items:center; border:1px solid rgba(151,187,170,.22); border-radius:13px; background:rgba(112,168,143,.045); }
+.invite-code span { color:var(--muted); font-size:11px; }
+.invite-code b { grid-column:1; font-size:22px; letter-spacing:.12em; }
+.invite-code button { grid-column:2; grid-row:1 / span 2; }
+.team-modal { max-width:520px; }
+.role-options { display:grid; gap:8px; margin-top:15px; }
+.role-options > button { width:100%; min-height:58px; padding:11px 13px; display:grid; gap:3px; text-align:left; color:var(--text); border:1px solid var(--line); border-radius:13px; background:rgba(255,255,255,.018); }
+.role-options > button.active,.role-options > button:hover { border-color:rgba(151,187,170,.30); background:rgba(112,168,143,.07); }
+.role-options b { font-size:14px; }
+.role-options span { color:var(--muted); font-size:11px; }
+.full-btn { width:100%; margin-top:13px; }
 .cloud-card { border-color:rgba(151,177,181,.24); }
 .cloud-card .primary-btn { width:100%; }
 .cloud-status.synced { color:#9ec9ae; }

@@ -2,6 +2,7 @@ const STORAGE_KEY = 'medflow-prototype-v1';
 const AUTH_STORAGE_KEY = 'medflow-supabase-session-v1';
 const SYNC_META_KEY = 'medflow-sync-meta-v1';
 const SYNC_STATE_KEY = 'medflow-sync-state-v2';
+const TEAM_STORAGE_KEY = 'medflow-team-session-v1';
 const RETRY_DELAYS = [5000, 15000, 30000];
 const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
@@ -114,6 +115,45 @@ let cloud = {
   syncing: false,
   lastSyncedAt: syncMeta.lastSyncAt || 0
 };
+let team = loadTeamSession();
+
+function loadTeamSession() {
+  try {
+    const value=JSON.parse(localStorage.getItem(TEAM_STORAGE_KEY))||{};
+    return {shiftId:String(value.shiftId||''),title:String(value.title||''),role:String(value.role||''),displayName:String(value.displayName||''),remoteVersion:String(value.remoteVersion||''),lastLocalAt:Number(value.lastLocalAt)||0,members:Array.isArray(value.members)?value.members:[],pendingReleases:Array.isArray(value.pendingReleases)?value.pendingReleases:[],invite:null,loading:false,error:''};
+  } catch { return {shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null,loading:false,error:''}; }
+}
+function storeTeamSession(next={}) {
+  team={...team,...next};
+  const persisted={shiftId:team.shiftId,title:team.title,role:team.role,displayName:team.displayName,remoteVersion:team.remoteVersion,lastLocalAt:team.lastLocalAt,members:team.members,pendingReleases:team.pendingReleases};
+  if(team.shiftId) localStorage.setItem(TEAM_STORAGE_KEY,JSON.stringify(persisted)); else localStorage.removeItem(TEAM_STORAGE_KEY);
+}
+function activeTeamShift() { return Boolean(team.shiftId&&cloud.session?.user?.id); }
+function teamRole() { return activeTeamShift()?team.role:''; }
+function canManageTeam() { return teamRole()==='owner'; }
+function canOperateTeam() { return !activeTeamShift()||['owner','orderly'].includes(teamRole()); }
+function canEditTeam() { return !activeTeamShift()||['owner','orderly','nurse'].includes(teamRole()); }
+function currentActor() {
+  const userId=cloud.session?.user?.id||'';
+  const member=team.members.find(item=>item.user_id===userId);
+  return {id:userId,name:member?.display_name||team.displayName||sessionEmail()||'Сотрудник',role:member?.role||team.role||''};
+}
+function memberById(id) { return team.members.find(item=>item.user_id===id)||null; }
+function actorName(id,fallback='') { return memberById(id)?.display_name||fallback||''; }
+function roleLabel(role) { return ({owner:'Владелец смены',orderly:'Санитар',nurse:'Медсестра',viewer:'Только просмотр'})[role]||'Участник'; }
+function queueTeamRelease(patientId) {
+  if(!activeTeamShift()||!patientId)return;
+  storeTeamSession({pendingReleases:[...new Set([...(team.pendingReleases||[]),patientId])]});
+}
+async function flushTeamReleases() {
+  if(!activeTeamShift()||!navigator.onLine||!team.pendingReleases?.length)return;
+  const remaining=[];
+  for(const patientId of team.pendingReleases) {
+    try { await teamRpc('medflow_release_patient',{target_shift:team.shiftId,target_patient:patientId}); }
+    catch { remaining.push(patientId); }
+  }
+  storeTeamSession({pendingReleases:remaining});
+}
 
 function load() {
   try { return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY)) || clone(seed)); }
@@ -190,7 +230,101 @@ async function ensureCloudSession() {
   if (expiresAt && expiresAt < Date.now() + 60000) return refreshCloudSession();
   return true;
 }
+async function teamRpc(name,args={}) {
+  return cloudRequest(`/rest/v1/rpc/${name}`,{method:'POST',body:JSON.stringify(args)});
+}
+async function fetchTeamMembers() {
+  if(!activeTeamShift()) return [];
+  const rows=await cloudRequest(`/rest/v1/medflow_shift_members?select=user_id,display_name,role,joined_at,last_seen_at&shift_id=eq.${encodeURIComponent(team.shiftId)}&order=joined_at.asc`);
+  if(!rows?.length) throw new Error('Участие в общей смене не найдено');
+  const own=rows.find(item=>item.user_id===cloud.session?.user?.id);
+  storeTeamSession({members:rows,role:own?.role||team.role,displayName:own?.display_name||team.displayName});
+  return rows;
+}
+async function discoverTeamShift() {
+  if(!cloud.session?.user?.id) return false;
+  if(team.shiftId) {
+    try { await fetchTeamMembers(); return true; }
+    catch { storeTeamSession({shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[]}); }
+  }
+  const rows=await cloudRequest(`/rest/v1/medflow_shift_members?select=shift_id,user_id,display_name,role,joined_at,last_seen_at&user_id=eq.${encodeURIComponent(cloud.session.user.id)}&order=joined_at.desc&limit=1`);
+  if(!rows?.length) return false;
+  const member=rows[0];
+  storeTeamSession({shiftId:member.shift_id,role:member.role,displayName:member.display_name,remoteVersion:'',lastLocalAt:0,members:[member]});
+  await fetchTeamMembers();
+  return true;
+}
+async function createTeamShift(title,displayName) {
+  const shiftId=await teamRpc('medflow_create_shift',{shift_title:title,member_name:displayName,initial_payload:state});
+  storeTeamSession({shiftId:String(shiftId||'').replaceAll('"',''),title:title||'Рабочая смена',role:'owner',displayName,remoteVersion:'',lastLocalAt:localUpdatedAt,members:[]});
+  state.settings.workMode='team'; localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+  await fetchTeamMembers(); await syncSharedShift({preferRemote:true});
+}
+async function joinTeamShift(code,displayName) {
+  const shiftId=await teamRpc('medflow_join_shift',{invite_code:code,member_name:displayName});
+  storeTeamSession({shiftId:String(shiftId||'').replaceAll('"',''),title:'',role:'',displayName,remoteVersion:'',lastLocalAt:0,members:[]});
+  state.settings.workMode='team'; localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+  await fetchTeamMembers(); await syncSharedShift({preferRemote:true});
+}
+async function createTeamInvite(role) {
+  const code=await teamRpc('medflow_create_shift_invite',{target_shift:team.shiftId,member_role:role});
+  team.invite={code:String(code||'').replaceAll('"',''),role};
+  return team.invite;
+}
+async function leaveTeamShift() {
+  if(!activeTeamShift()) return;
+  if(teamRole()==='owner') await cloudRequest(`/rest/v1/medflow_shifts?id=eq.${encodeURIComponent(team.shiftId)}`,{method:'DELETE'});
+  else await cloudRequest(`/rest/v1/medflow_shift_members?shift_id=eq.${encodeURIComponent(team.shiftId)}&user_id=eq.${encodeURIComponent(cloud.session.user.id)}`,{method:'DELETE'});
+  storeTeamSession({shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null});
+  state.settings.workMode='solo'; save();
+}
+async function pushSharedShift(expectedVersion=team.remoteVersion) {
+  if(!activeTeamShift()||!navigator.onLine||!canEditTeam()) return false;
+  const result=await teamRpc('medflow_update_shift',{target_shift:team.shiftId,expected_updated_at:expectedVersion||null,next_payload:state});
+  if(!result?.ok) return result||{ok:false};
+  const syncedAt=Date.now();
+  storeTeamSession({remoteVersion:result.updated_at||expectedVersion,lastLocalAt:localUpdatedAt,title:result.title||team.title});
+  cloud.lastSyncedAt=syncedAt; cloud.status='synced'; cloud.message='Общая смена сохранена'; clearCloudRetry();
+  return result;
+}
+async function syncSharedShift({preferRemote=false}={}) {
+  if(cloud.syncing||!activeTeamShift()) return;
+  if(!navigator.onLine){cloud.status='offline';cloud.message='Общая смена сохранена на устройстве';return;}
+  if(deferSyncForOpenForm()) return;
+  cloud.syncing=true; cloud.status='syncing';
+  try {
+    const ready=await ensureCloudSession(); if(!ready)return;
+    await flushTeamReleases();
+    const rows=await cloudRequest(`/rest/v1/medflow_shifts?select=id,title,payload,updated_at,closed_at&id=eq.${encodeURIComponent(team.shiftId)}&limit=1`);
+    const remote=rows?.[0]; if(!remote) throw new Error('Общая смена не найдена или доступ отозван');
+    const remoteChanged=Boolean(team.remoteVersion&&remote.updated_at!==team.remoteVersion);
+    const localDirty=localUpdatedAt>(team.lastLocalAt||0);
+    if(preferRemote||(!localDirty&&(remoteChanged||!team.remoteVersion))) {
+      state=normalizeState(clone(remote.payload)); state.settings.workMode='team';
+      localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); localUpdatedAt=Date.now(); localStorage.setItem(SYNC_META_KEY,String(localUpdatedAt));
+      storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,title:remote.title||team.title});
+      cloud.lastSyncedAt=Date.now(); cloud.status='synced'; cloud.message='Общая смена обновлена';
+    } else if(localDirty) {
+      let expected=remote.updated_at;
+      if(remoteChanged||!team.remoteVersion) state=mergeStates(state,remote.payload);
+      for(let attempt=0;attempt<3;attempt+=1) {
+        const result=await pushSharedShift(expected);
+        if(result?.ok) break;
+        if(!result?.payload) throw new Error('Не удалось объединить общую смену');
+        state=mergeStates(state,result.payload); expected=result.updated_at;
+        localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); localUpdatedAt=Date.now(); localStorage.setItem(SYNC_META_KEY,String(localUpdatedAt));
+        if(attempt===2) throw new Error('Смена быстро меняется на другом устройстве. Повторим автоматически');
+      }
+    } else {
+      storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,title:remote.title||team.title});
+      cloud.lastSyncedAt=Date.now();cloud.status='synced';cloud.message='';
+    }
+    await fetchTeamMembers(); clearCloudRetry();
+  } catch(error) { cloud.status='error';cloud.message=error.message||'Не удалось синхронизировать общую смену';scheduleCloudRetry(); }
+  finally {cloud.syncing=false;if(!modal&&(view==='settings'||view==='today'||view==='inbox'))render(true);}
+}
 async function pushCloudState() {
+  if(activeTeamShift()) return pushSharedShift();
   if (!cloud.session?.user?.id || !navigator.onLine) return false;
   const ready = await ensureCloudSession();
   if (!ready) return false;
@@ -229,6 +363,7 @@ function deferSyncForOpenForm() {
   return true;
 }
 async function syncCloudState({preferRemote=false}={}) {
+  if(activeTeamShift()) return syncSharedShift({preferRemote});
   if (cloud.syncing || !cloud.session?.user?.id) return;
   if (!navigator.onLine) { cloud.status='offline'; cloud.message='Изменения сохранены на устройстве'; return; }
   if (deferSyncForOpenForm()) return;
@@ -276,6 +411,7 @@ async function signInCloud(email,password) {
   const session = await cloudRequest('/auth/v1/token?grant_type=password', { method:'POST', body:JSON.stringify({email,password}) }, false);
   storeCloudSession(session);
   cloud.message = 'Вход выполнен';
+  await discoverTeamShift();
   await syncCloudState();
 }
 async function signUpCloud(email,password) {
@@ -283,6 +419,7 @@ async function signUpCloud(email,password) {
   if (result?.access_token) {
     storeCloudSession(result);
     cloud.message = 'Аккаунт создан';
+    await discoverTeamShift();
     await syncCloudState();
   } else {
     cloud.message = 'Проверь почту и подтверди регистрацию, затем войди';
@@ -325,8 +462,8 @@ function mergePatient(localPatient,remotePatient) {
   const localSteps=new Map((localPatient.steps||[]).map(step=>[step.id,step]));
   const remoteSteps=new Map((remotePatient.steps||[]).map(step=>[step.id,step]));
   const stepIds=[...new Set([...localSteps.keys(),...remoteSteps.keys()])];
-  const events=[...(localPatient.events||[]),...(remotePatient.events||[])].filter((event,index,all)=>index===all.findIndex(item=>item.at===event.at&&item.text===event.text)).sort((a,b)=>(a.at||0)-(b.at||0));
-  const patientTime=patient=>Math.max(0,Number(patient.inboxCreatedAt)||0,Number(patient.inboxResolvedAt)||0,...(patient.steps||[]).map(stepTouchedAt),...(patient.events||[]).map(event=>Number(event.at)||0));
+  const events=[...(localPatient.events||[]),...(remotePatient.events||[])].filter((event,index,all)=>index===all.findIndex(item=>event.id&&item.id?item.id===event.id:item.at===event.at&&item.text===event.text)).sort((a,b)=>(a.at||0)-(b.at||0));
+  const patientTime=patient=>Math.max(0,Number(patient.updatedAt)||0,Number(patient.inboxCreatedAt)||0,Number(patient.inboxResolvedAt)||0,...(patient.steps||[]).map(stepTouchedAt),...(patient.events||[]).map(event=>Number(event.at)||0));
   const preferred=patientTime(remotePatient)>patientTime(localPatient)?remotePatient:localPatient;
   return {...clone(localPatient),...clone(remotePatient),...clone(preferred),steps:stepIds.map(id=>mergeStep(localSteps.get(id),remoteSteps.get(id))),events};
 }
@@ -397,6 +534,14 @@ function normalizePatient(patient) {
   patient.departmentId = String(patient.departmentId || '');
   patient.doctorId = String(patient.doctorId || '');
   patient.doctorName = String(patient.doctorName || '');
+  patient.createdBy = String(patient.createdBy || '');
+  patient.createdByName = String(patient.createdByName || '');
+  patient.acceptedBy = String(patient.acceptedBy || '');
+  patient.acceptedByName = String(patient.acceptedByName || '');
+  patient.assignedTo = String(patient.assignedTo || '');
+  patient.assignedToName = String(patient.assignedToName || '');
+  patient.updatedAt = validTimestamp(patient.updatedAt) || 0;
+  patient.updatedBy = String(patient.updatedBy || '');
   patient.block = ['gxo','xo','op'].includes(patient.block) ? 'op' : patient.block === 'angio' ? 'angio' : '';
   const allowedFlags=new Set(CARE_FLAGS.map(item=>item.id));
   patient.careFlags=Array.isArray(patient.careFlags)?[...new Set(patient.careFlags.map(flag=>['hygiene_caution','assisted_contact'].includes(flag)?'patient_attention':flag).filter(flag=>allowedFlags.has(flag)))]:[];
@@ -720,7 +865,7 @@ function workModeSelectorView(compact=false) {
   </div>`;
 }
 function showFloatingAdd(currentView=view, settings=state.settings) {
-  return ['today','inbox','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
+  return canEditTeam() && ['today','inbox','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
 }
 function captureViewPosition() {
   const filters=Array.from(document.querySelectorAll?.('.filters') || []);
@@ -859,7 +1004,7 @@ function moreNavButton() {
   return `<button class="nav-btn ${active?'active':''}" data-action="open-more"><b>•••</b>Ещё</button>`;
 }
 function topbarView() {
-  const inlineAdd = addButtonPosition() === 'inline';
+  const inlineAdd = canEditTeam() && addButtonPosition() === 'inline';
   if (view !== 'today') {
     const title = view === 'inbox' ? 'Новое' : view === 'directions' ? 'Направления' : view === 'contacts' ? 'Контакты' : view === 'history' ? 'История' : 'Настройки';
     return `<header class="topbar section-topbar"><h1>${title}</h1>${['inbox','directions'].includes(view)&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
@@ -942,8 +1087,9 @@ function incomingCard(patient) {
   return `<article class="incoming-card ${urgent?'urgent':''}">
     <div class="incoming-head"><div><div class="patient-name">${esc(patient.surname)} <span class="patient-room">· п.${esc(patient.room||'?')}</span></div><small>${esc(departmentLabel(patient.departmentId))}${patient.inboxCreatedAt?` · ${fmtClock(patient.inboxCreatedAt)}`:''}</small></div>${urgent?'<span class="badge urgent">СРОЧНО</span>':''}</div>
     <div class="incoming-task"><span>Поручение</span><b>${esc(step?.title||'Уточнить')}</b>${stepTimeLabel(step)?`<small>${esc(stepTimeLabel(step))}</small>`:''}</div>
+    ${teamPatientMetaView(patient)}
     ${patientCareFlags(patient).length?`<div class="care-flag-badges">${patientCareFlags(patient).map(item=>`<span>${item.icon} ${esc(item.label)}</span>`).join('')}</div>`:''}
-    <div class="incoming-actions"><button class="primary-btn" data-action="accept-incoming" data-patient="${patient.id}">Принять в очередь</button><button class="secondary-btn" data-action="reject-incoming" data-patient="${patient.id}">Отклонить</button></div>
+    ${canOperateTeam()?`<div class="incoming-actions"><button class="primary-btn" data-action="accept-incoming" data-patient="${patient.id}">Принять в очередь</button><button class="secondary-btn" data-action="reject-incoming" data-patient="${patient.id}">Отклонить</button></div>`:'<p class="inbox-role-note">Ожидает решения санитара</p>'}
   </article>`;
 }
 function inboxView() {
@@ -1092,11 +1238,20 @@ function cloudSettingsView() {
   </section>`;
 }
 
+function teamSettingsView() {
+  if(!cloud.session) return `<section class="settings-card team-settings-card"><div class="settings-card-head"><h2>Общая смена</h2><span>нужен аккаунт</span></div><p>Войди в облако выше, чтобы создать смену или подключиться по одноразовому коду.</p></section>`;
+  if(!activeTeamShift()) return `<section class="settings-card team-settings-card"><div class="settings-card-head"><h2>Общая смена</h2><span>не подключена</span></div><p>Создай смену для своего отделения или введи код от владельца. Личные данные останутся отдельной копией.</p><div class="settings-actions"><button class="primary-btn" data-action="team-create-open">Создать смену</button><button class="secondary-btn" data-action="team-join-open">Ввести код</button></div></section>`;
+  const actor=currentActor();
+  const members=team.members.map(member=>`<div class="team-member"><div><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}${member.user_id===actor.id?' · это вы':''}</span></div>${canManageTeam()&&member.user_id!==actor.id?`<button class="secondary-btn" data-action="team-member-open" data-member="${esc(member.user_id)}">Права</button>`:''}</div>`).join('');
+  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))}</span></div><p>Очередь синхронизируется между участниками. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
+}
+
 function settingsView() {
   const buttonPosition = addButtonPosition();
   const thresholds = waitThresholds();
   return `
     ${cloudSettingsView()}
+    ${teamSettingsView()}
     <section class="settings-card">
       <div class="settings-card-head"><h2>Режим смены</h2><span>${workMode()==='solo'?'личная работа':'совместная работа'}</span></div>
       <p>В «Соло» скрываются участники, назначения и командные действия. Переключение не удаляет пациентов и историю.</p>
@@ -1164,6 +1319,7 @@ function compactPatientCard(p) {
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
       <div class="badges">${p.departmentId?`<span class="badge department ${isOwnDepartment(p)?'own':''}" title="${esc(departmentLabel(p.departmentId))}">${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · НАШЕ':''}</span>`:''}${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
     </div>
+    ${teamPatientMetaView(p)}
     <div class="compact-body">
       <div class="compact-copy">
         <div class="current-label">Сейчас</div>
@@ -1174,11 +1330,20 @@ function compactPatientCard(p) {
       </div>
       <div class="compact-controls">
         ${operationTimersView(orStep)}
-        ${step ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : lastTerminal ? `<button class="secondary-btn restore-btn" data-action="restore-step" data-patient="${p.id}" data-step="${lastTerminal.id}" data-source="current">Вернуть в очередь</button>` : ''}
+        ${step && canOperateTeam() ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : !step && lastTerminal && canOperateTeam() ? `<button class="secondary-btn restore-btn" data-action="restore-step" data-patient="${p.id}" data-step="${lastTerminal.id}" data-source="current">Вернуть в очередь</button>` : ''}
         <div class="compact-tools"><button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>
       </div>
     </div>
   </article>`;
+}
+
+function teamPatientMetaView(patient) {
+  if(workMode()!=='team') return '';
+  const bits=[];
+  if(patient.createdBy||patient.createdByName) bits.push(`Добавил: ${actorName(patient.createdBy,patient.createdByName)||'сотрудник'}`);
+  if(patient.acceptedBy||patient.acceptedByName) bits.push(`Принял: ${actorName(patient.acceptedBy,patient.acceptedByName)||'сотрудник'}`);
+  if(patient.assignedTo||patient.assignedToName) bits.push(`В работе у: ${actorName(patient.assignedTo,patient.assignedToName)||'сотрудник'}`);
+  return bits.length?`<div class="team-patient-meta">${bits.map((text,index)=>`<span class="${index===bits.length-1&&patient.assignedTo?'assigned':''}">${esc(text)}</span>`).join('')}</div>`:'';
 }
 
 function patientCard(p) {
@@ -1221,6 +1386,27 @@ function preopChecklistView() {
 }
 
 function modalView() {
+  if(modal.type==='team-create'||modal.type==='team-join') {
+    const joining=modal.type==='team-join';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal team-modal" onclick="event.stopPropagation()"><h2>${joining?'Подключиться к смене':'Создать общую смену'}</h2><p class="modal-sub">${joining?'Код одноразовый. После подключения очередь появится на этом устройстве.':'Ты станешь владельцем и сможешь приглашать сотрудников по ролям.'}</p><form id="team-shift-form" class="form-grid">${joining?'<div class="field full"><label>Код приглашения</label><input name="code" required maxlength="12" autocomplete="one-time-code" autocapitalize="characters" placeholder="Например, A1B2C3D4"></div>':'<div class="field full"><label>Название смены</label><input name="title" required value="Смена ГХО" placeholder="Смена ГХО"></div>'}<div class="field full"><label>Как тебя показывать коллегам</label><input name="display-name" required value="${esc(team.displayName||'')}" placeholder="Например, Михаил"></div>${modal.error?`<p class="form-error full">${esc(modal.error)}</p>`:''}</form><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="${joining?'team-join-submit':'team-create-submit'}">${joining?'Подключиться':'Создать'}</button></div></section></div>`;
+  }
+  if(modal.type==='team-invite') {
+    return `<div class="modal-backdrop" data-action="close"><section class="modal team-modal" onclick="event.stopPropagation()"><h2>Пригласить сотрудника</h2><p class="modal-sub">Код действует 24 часа и срабатывает один раз.</p><div class="role-options"><button data-action="team-invite-create" data-role="orderly"><b>Санитар</b><span>Принимает, выполняет и передаёт пациентов</span></button><button data-action="team-invite-create" data-role="nurse"><b>Медсестра</b><span>Добавляет и уточняет поручения</span></button><button data-action="team-invite-create" data-role="viewer"><b>Просмотр</b><span>Только видит очередь и статусы</span></button></div>${modal.error?`<p class="form-error">${esc(modal.error)}</p>`:''}<div class="modal-actions"><button class="secondary-btn" data-action="close">Закрыть</button></div></section></div>`;
+  }
+  if(modal.type==='team-member') {
+    const member=memberById(modal.member);if(!member)return '';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal team-modal" onclick="event.stopPropagation()"><h2>${esc(member.display_name)}</h2><p class="modal-sub">Изменить права или отключить от общей смены.</p><div class="role-options"><button class="${member.role==='orderly'?'active':''}" data-action="team-member-save" data-member="${esc(member.user_id)}" data-role="orderly"><b>Санитар</b><span>Полная работа с очередью</span></button><button class="${member.role==='nurse'?'active':''}" data-action="team-member-save" data-member="${esc(member.user_id)}" data-role="nurse"><b>Медсестра</b><span>Добавление и уточнение</span></button><button class="${member.role==='viewer'?'active':''}" data-action="team-member-save" data-member="${esc(member.user_id)}" data-role="viewer"><b>Просмотр</b><span>Без изменений</span></button></div><button class="danger-btn full-btn" data-action="team-member-remove" data-member="${esc(member.user_id)}">Отключить от смены</button><div class="modal-actions"><button class="secondary-btn" data-action="close">Закрыть</button></div></section></div>`;
+  }
+  if(modal.type==='team-leave') {
+    const closing=teamRole()==='owner';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>${closing?'Закрыть общую смену?':'Покинуть общую смену?'}</h2><p class="modal-sub">${closing?'Доступ закроется у всех участников. Локальная копия останется на этом устройстве.':'Локальная копия останется на устройстве. Для повторного входа понадобится новый код.'}</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Остаться</button><button class="danger-btn" data-action="team-leave-confirm">${closing?'Закрыть':'Покинуть'}</button></div></section></div>`;
+  }
+  if(modal.type==='team-handoff') {
+    const patient=state.patients.find(item=>item.id===modal.patient);
+    const workers=team.members.filter(member=>['owner','orderly'].includes(member.role)&&member.user_id!==cloud.session?.user?.id);
+    if(!patient)return '';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal team-modal" onclick="event.stopPropagation()"><h2>Передать пациента</h2><p class="modal-sub">${esc(patient.surname)} · текущий этап продолжится, но ответственным станет выбранный сотрудник.</p><div class="role-options">${workers.map(member=>`<button data-action="team-handoff-confirm" data-patient="${esc(patient.id)}" data-member="${esc(member.user_id)}"><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}</span></button>`).join('')||'<p class="empty compact-empty">Других санитаров в смене пока нет</p>'}</div><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button></div></section></div>`;
+  }
   if (modal.type === 'more-menu') {
     const activeMode=Boolean(state.settings.travelMode);
     return `<div class="modal-backdrop" data-action="close"><section class="modal more-menu" onclick="event.stopPropagation()">
@@ -1545,7 +1731,22 @@ function armUndo(label) {
   undoTimer=setTimeout(()=>{undoEntry=null;undoTimer=null;if(document.getElementById('app')&&!modal)render(true);},UNDO_TIMEOUT);
 }
 function clearUndo() { if(undoTimer)clearTimeout(undoTimer);undoTimer=null;undoEntry=null; }
-function log(p,text) { p.events ||= []; p.events.push({at:Date.now(),text}); }
+function log(p,text) {
+  const actor=currentActor(), at=Date.now();
+  p.events ||= []; p.events.push({id:uid(),at,text,by:actor.id,byName:actor.name});
+  p.updatedAt=at; p.updatedBy=actor.id;
+}
+function markPatientCreated(patient) {
+  const actor=currentActor();
+  patient.createdBy=actor.id; patient.createdByName=actor.name; patient.updatedBy=actor.id; patient.updatedAt=Date.now();
+  return patient;
+}
+function assignPatient(patient,userId=cloud.session?.user?.id) {
+  const member=memberById(userId), actor=currentActor();
+  patient.assignedTo=userId||actor.id; patient.assignedToName=member?.display_name||(userId===actor.id?actor.name:'Сотрудник');
+  patient.updatedAt=Date.now();patient.updatedBy=actor.id;
+  return patient;
+}
 function nextWaitingStep(p) { return p.steps.find(s=>s.state==='waiting'); }
 function activateNext(p) { const next=nextWaitingStep(p); if(next) next.state='active'; return next; }
 function canContinueNow(p) { const step=currentStep(p); return step?.state==='in_progress' && !isOperationStep(step) && Boolean(nextWaitingStep(p)); }
@@ -1555,6 +1756,7 @@ function completeCurrentStep(p, startNext=false, at=Date.now()) {
   step.state='done'; step.finishedAt=at;
   const next=activateNext(p);
   if(startNext && next) { next.state='in_progress'; next.startedAt ||= at; }
+  if(!startNext) { p.assignedTo=''; p.assignedToName=''; queueTeamRelease(p.id); }
   return {step,next};
 }
 function stopCurrentStep(p, action, at=Date.now()) {
@@ -1562,6 +1764,7 @@ function stopCurrentStep(p, action, at=Date.now()) {
   if(!step || !['cancel-step','postpone-step'].includes(action)) return null;
   step.state=action==='postpone-step'?'postponed':'cancelled';
   step.finishedAt=at;
+  p.assignedTo=''; p.assignedToName=''; queueTeamRelease(p.id);
   activateNext(p);
   syncPatientPriority(p,Boolean(currentStep(p)?.urgent));
   return step;
@@ -1600,6 +1803,10 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 }
 
 async function handleAction(action, el, e) {
+  const writeActions=new Set(['submit-quick','submit-patient','contact-save','contact-delete','department-save','direction-save','route-save','save-patient','confirm-import-backup','confirm-reset','confirm-new-shift']);
+  const operateActions=new Set(['accept-incoming','reject-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm']);
+  if(activeTeamShift()&&writeActions.has(action)&&!canEditTeam()) { cloud.message='У этой роли нет права изменять смену'; return render(true); }
+  if(activeTeamShift()&&operateActions.has(action)&&!canOperateTeam()) { cloud.message='Только санитар или владелец может менять ход выполнения'; return render(true); }
   if (action==='undo-last') {
     if(!undoEntry)return;
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
@@ -1608,10 +1815,54 @@ async function handleAction(action, el, e) {
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
   if (action==='directions-home') { document.querySelector('.section-topbar')?.scrollIntoView({behavior:'smooth',block:'start'}); return; }
   if (action==='set-work-mode') {
+    if(activeTeamShift()&&el.dataset.mode!=='team') { cloud.message='Сначала покинь общую смену в настройках'; view='settings'; modal=null; return render(true); }
     state.settings.workMode=el.dataset.mode==='team'?'team':'solo';
     save();
     if(modal?.type==='more-menu') modal={type:'more-menu'};
     return render(true);
+  }
+  if(action==='team-create-open'){modal={type:'team-create',error:''};return render(true);}
+  if(action==='team-join-open'){modal={type:'team-join',error:''};return render(true);}
+  if(action==='team-create-submit'||action==='team-join-submit'){
+    const form=document.getElementById('team-shift-form');if(!form?.reportValidity())return;
+    const fd=new FormData(form), displayName=String(fd.get('display-name')||'').trim();modal.error='';team.loading=true;
+    try {
+      if(action==='team-create-submit') await createTeamShift(String(fd.get('title')||'').trim(),displayName);
+      else await joinTeamShift(String(fd.get('code')||'').trim(),displayName);
+      modal=null;view='today';cloud.message='Общая смена подключена';return render();
+    } catch(error){modal.error=error.message||'Не удалось подключить общую смену';team.loading=false;return render();}
+  }
+  if(action==='team-invite-open'){modal={type:'team-invite',error:''};return render(true);}
+  if(action==='team-invite-create'){
+    try{await createTeamInvite(el.dataset.role);modal=null;view='settings';return render(true);}
+    catch(error){modal.error=error.message||'Не удалось создать код';return render();}
+  }
+  if(action==='team-copy-code'){
+    try{await navigator.clipboard.writeText(el.dataset.code||'');cloud.message='Код скопирован';}catch{cloud.message=`Код: ${el.dataset.code||''}`;}
+    return render(true);
+  }
+  if(action==='team-refresh'){await fetchTeamMembers();await syncSharedShift();return render(true);}
+  if(action==='team-leave-open'){modal={type:'team-leave'};return render(true);}
+  if(action==='team-leave-confirm'){
+    try{await leaveTeamShift();modal=null;view='settings';cloud.message='Ты вышел из общей смены';return render();}
+    catch(error){modal=null;team.error=error.message||'Не удалось выйти';view='settings';return render();}
+  }
+  if(action==='team-member-open'){modal={type:'team-member',member:el.dataset.member};return render(true);}
+  if(action==='team-member-save'){
+    try{await cloudRequest(`/rest/v1/medflow_shift_members?shift_id=eq.${encodeURIComponent(team.shiftId)}&user_id=eq.${encodeURIComponent(el.dataset.member)}`,{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify({role:el.dataset.role})});await fetchTeamMembers();modal=null;return render(true);}
+    catch(error){team.error=error.message||'Не удалось изменить права';modal=null;return render(true);}
+  }
+  if(action==='team-member-remove'){
+    try{await cloudRequest(`/rest/v1/medflow_shift_members?shift_id=eq.${encodeURIComponent(team.shiftId)}&user_id=eq.${encodeURIComponent(el.dataset.member)}`,{method:'DELETE'});await fetchTeamMembers();modal=null;return render(true);}
+    catch(error){team.error=error.message||'Не удалось отключить участника';modal=null;return render(true);}
+  }
+  if(action==='team-handoff-confirm'){
+    const patient=state.patients.find(item=>item.id===el.dataset.patient),member=memberById(el.dataset.member);if(!patient||!member)return;
+    try {
+      const result=await teamRpc('medflow_transfer_patient',{target_shift:team.shiftId,target_patient:patient.id,next_user:member.user_id});
+      if(!result?.ok) throw new Error('Передача не подтверждена');
+      assignPatient(patient,member.user_id);log(patient,`Передано сотруднику: ${member.display_name}`);modal=null;save();return render(true);
+    } catch(error){cloud.message=error.message||'Не удалось передать пациента';modal=null;return render(true);}
   }
   if (action==='toggle-travel-mode') { state.settings.travelMode=!state.settings.travelMode; save(); modal={type:'more-menu'}; return render(true); }
   if (action==='contact-add') { modal={type:'contact',contact:null}; return render(true); }
@@ -1851,6 +2102,7 @@ async function handleAction(action, el, e) {
     if (mode==='start') {
       if(isOperationStep(s)) s.preopCheck={at:now,dentures:true,jewelry:true,belongings:true};
       setStepDocument(s,'start',startStatus,now); s.state='in_progress'; s.startedAt ||= now;
+      assignPatient(p);
       log(p,`Начато сопровождение: ${s.title}`); modal=null;
     } else if (mode==='finish') {
       setStepDocument(s,'finish',finishStatus,now);
@@ -1860,6 +2112,7 @@ async function handleAction(action, el, e) {
       setStepDocument(s,'finish',finishStatus,now);
       const moved=completeCurrentStep(p,true,now);
       setStepDocument(moved.next,'start',startStatus,now);
+      assignPatient(p);
       log(p,`Выполнено: ${moved.step.title} → начато сопровождение: ${moved.next.title}`); modal=null;
     } else if (mode==='operation-pickup') {
       setStepDocument(s,'finish',finishStatus,now); s.pickedUpAt ||= now;
@@ -1876,6 +2129,15 @@ async function handleAction(action, el, e) {
   }
   if (action==='advance') {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
+    if(activeTeamShift()&&!p.assignedTo) {
+      try {
+        const claim=await teamRpc('medflow_claim_patient',{target_shift:team.shiftId,target_patient:p.id});
+        if(!claim?.ok){cloud.message=`Пациент уже в работе у: ${claim?.display_name||'другого сотрудника'}`;await syncSharedShift({preferRemote:true});return render(true);}
+        assignPatient(p); log(p,'Взят в работу'); save();
+      } catch(error){cloud.message=error.message||'Не удалось взять пациента в работу';return render(true);}
+    } else if(activeTeamShift()&&p.assignedTo&&p.assignedTo!==cloud.session?.user?.id) {
+      cloud.message=`Пациент в работе у: ${actorName(p.assignedTo,p.assignedToName)||'другого сотрудника'}`;return render(true);
+    }
     p.pinned=false;
     if (isOperationStep(s) && ['active','waiting'].includes(s.state)) { modal={type:'documents',mode:'start',patient:p.id}; return render(); }
     if (isOperationStep(s) && s.state==='in_progress') { modal={type:'confirm-transition',transition:'arrived',patient:p.id}; return render(); }
@@ -1916,7 +2178,7 @@ async function handleAction(action, el, e) {
     const title=fd.get('title').trim() || typeLabel(type);
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:type==='operation'?String(fd.get('block')||''):'',transport:'',priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps:[{id:uid(),type,title,time:chosenTime.time,timeFlexible:chosenTime.timeFlexible,state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
-    syncPatientPriority(p,urgent);
+    markPatientCreated(p); syncPatientPriority(p,urgent);
     const target=workMode()==='team'||fd.get('entry-target')==='inbox'?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
     if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
@@ -1931,7 +2193,7 @@ async function handleAction(action, el, e) {
     const steps=types.map((t,i)=>({id:uid(),type:t,title:t===type?fd.get('destination'):typeLabel(t),time:i===0?chosenTime.time:'',timeFlexible:i===0?chosenTime.timeFlexible:false,state:i===0?'active':'waiting',urgent:urgent&&i===0,needsClarification:!fd.get('room')||!fd.get('transport')}));
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:types.includes('operation')?String(fd.get('block')||''):'',transport:fd.get('transport'),priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps,note:fd.get('note'),events:[]};
-    syncPatientPriority(p,urgent);
+    markPatientCreated(p); syncPatientPriority(p,urgent);
     const target=workMode()==='team'||fd.get('entry-target')==='inbox'?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня');
     if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
@@ -1940,16 +2202,26 @@ async function handleAction(action, el, e) {
   }
   if (action==='accept-incoming' || action==='reject-incoming') {
     const patient=state.incoming.find(item=>item.id===el.dataset.patient); if(!patient)return;
+    if(action==='accept-incoming'&&activeTeamShift()) {
+      try {
+        const claim=await teamRpc('medflow_claim_patient',{target_shift:team.shiftId,target_patient:patient.id});
+        if(!claim?.ok) { cloud.message=`Уже принял: ${claim?.display_name||'другой сотрудник'}`; await syncSharedShift({preferRemote:true}); return render(true); }
+      } catch(error) { cloud.message=error.message||'Не удалось принять поручение'; return render(true); }
+    }
     armUndo(action==='accept-incoming'?'Поручение принято в очередь':'Поручение отклонено');
     const now=Date.now();
     if(action==='accept-incoming') {
       patient.inboxStatus='accepted'; patient.inboxResolvedAt=now;
       const accepted=clone(patient); delete accepted.inboxStatus; delete accepted.inboxCreatedAt; delete accepted.inboxResolvedAt;
+      const actor=currentActor(); accepted.acceptedBy=actor.id; accepted.acceptedByName=actor.name; accepted.updatedAt=now; accepted.updatedBy=actor.id;
       log(accepted,'Принято из раздела «Новое»'); state.patients.push(accepted);
     } else { patient.inboxStatus='rejected'; patient.inboxResolvedAt=now; log(patient,'Отклонено во входящих'); }
     save(); return render(true);
   }
-  if (action==='handoff') { modal={type:'documents',mode:'handoff',patient:el.dataset.patient}; return render(); }
+  if (action==='handoff') {
+    if(activeTeamShift()) { modal={type:'team-handoff',patient:el.dataset.patient}; return render(); }
+    modal={type:'documents',mode:'handoff',patient:el.dataset.patient}; return render();
+  }
   if (['cancel-step','postpone-step'].includes(action)) {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
     if (['in_progress','in_or','pickup'].includes(s.state) && !s.documents?.finish) {
@@ -1996,6 +2268,6 @@ window.addEventListener('offline',()=>{
   if(!modal&&(view==='settings'||view==='today')) render(true);
 });
 render();
-handleAuthRedirect().then(()=>{ if(cloud.session && modal?.type!=='password-update') setTimeout(()=>syncCloudState(),0); }).catch(error=>{
+handleAuthRedirect().then(async()=>{ if(cloud.session && modal?.type!=='password-update') { await discoverTeamShift(); setTimeout(()=>syncCloudState(),0); } }).catch(error=>{
   cloud.message=authErrorMessage(error); if(cloud.session) setTimeout(()=>syncCloudState(),0); if(view==='settings')render(true);
 });
