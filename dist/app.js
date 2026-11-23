@@ -58,7 +58,7 @@ function clone(value) {
 }
 
 const seed = {
-  schemaVersion: 10,
+  schemaVersion: 11,
   shiftStartedAt: Date.now(),
   incoming: [],
   patients: [
@@ -86,7 +86,7 @@ const seed = {
   directions: clone(DEFAULT_DIRECTIONS),
   departments: clone(DEFAULT_DEPARTMENTS),
   contacts: [],
-  settings: { sortMode: 'priority', addButtonPosition: 'floating', ownDepartmentId: 'department-own', travelMode:false, waitThresholds:clone(DEFAULT_WAIT_THRESHOLDS) }
+  settings: { sortMode: 'priority', addButtonPosition: 'floating', ownDepartmentId: 'department-own', workMode:'solo', travelMode:false, waitThresholds:clone(DEFAULT_WAIT_THRESHOLDS) }
 };
 
 let state = load();
@@ -418,7 +418,7 @@ function inferShiftStart(patients) {
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
   const incomingVersion = Number(next.schemaVersion) || 1;
-  next.schemaVersion = 10;
+  next.schemaVersion = 11;
   next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
   next.incoming = Array.isArray(next.incoming) ? next.incoming.map(normalizePatient).filter(Boolean) : [];
   next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
@@ -431,6 +431,7 @@ function normalizeState(value) {
   next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
   if (!SORT_MODES.includes(next.settings.sortMode)) next.settings.sortMode = 'priority';
   if (!ADD_BUTTON_POSITIONS.includes(next.settings.addButtonPosition)) next.settings.addButtonPosition = 'floating';
+  if (!['solo','team'].includes(next.settings.workMode)) next.settings.workMode = 'solo';
   next.settings.travelMode = Boolean(next.settings.travelMode);
   const thresholds=next.settings.waitThresholds&&typeof next.settings.waitThresholds==='object'?next.settings.waitThresholds:{};
   const warningMinutes=Math.max(1,Math.round(Number(thresholds.warningMinutes)||DEFAULT_WAIT_THRESHOLDS.warningMinutes));
@@ -709,6 +710,14 @@ function stepHistoryFacts(step, now=Date.now()) {
 function addButtonPosition(settings=state.settings) {
   return ADD_BUTTON_POSITIONS.includes(settings?.addButtonPosition) ? settings.addButtonPosition : 'floating';
 }
+function workMode(settings=state.settings) { return settings?.workMode === 'team' ? 'team' : 'solo'; }
+function workModeSelectorView(compact=false) {
+  const mode=workMode();
+  return `<div class="work-mode-selector ${compact?'compact':''}" role="group" aria-label="Режим смены">
+    <button class="${mode==='solo'?'active':''}" data-action="set-work-mode" data-mode="solo" aria-pressed="${mode==='solo'}"><b>Соло</b>${compact?'':'<span>Только личная очередь</span>'}</button>
+    <button class="${mode==='team'?'active':''}" data-action="set-work-mode" data-mode="team" aria-pressed="${mode==='team'}"><b>Команда</b>${compact?'':'<span>Напарник и сотрудники поста</span>'}</button>
+  </div>`;
+}
 function showFloatingAdd(currentView=view, settings=state.settings) {
   return ['today','inbox','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
 }
@@ -817,7 +826,7 @@ function render(preservePosition=false) {
   const active = sortPatients(state.patients.filter(p => !isComplete(p)));
   const completed = sortPatients(state.patients.filter(isComplete));
   document.getElementById('app').innerHTML = `
-    <main class="shell ${state.settings.travelMode?'travel-mode':''}">
+    <main class="shell ${state.settings.travelMode?'travel-mode':''} ${workMode()}-mode">
       ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
@@ -1083,6 +1092,11 @@ function settingsView() {
   return `
     ${cloudSettingsView()}
     <section class="settings-card">
+      <div class="settings-card-head"><h2>Режим смены</h2><span>${workMode()==='solo'?'личная работа':'совместная работа'}</span></div>
+      <p>В «Соло» скрываются участники, назначения и командные действия. Переключение не удаляет пациентов и историю.</p>
+      ${workModeSelectorView()}
+    </section>
+    <section class="settings-card">
       <div class="settings-card-head"><h2>Отделения</h2><span>${getDepartments().length} в списке</span></div>
       <p>Наше отделение: <b>${esc(departmentLabel(ownDepartmentId()))}</b>. Оно выбирается по умолчанию для новых пациентов.</p>
       <button class="secondary-btn" data-action="manage-departments">Настроить отделения</button>
@@ -1205,6 +1219,7 @@ function modalView() {
     const activeMode=Boolean(state.settings.travelMode);
     return `<div class="modal-backdrop" data-action="close"><section class="modal more-menu" onclick="event.stopPropagation()">
       <div class="more-menu-head"><div><h2>Ещё</h2><p class="modal-sub">Разделы и режим отображения</p></div><button class="secondary-btn more-close" data-action="close" aria-label="Закрыть">×</button></div>
+      <div class="more-mode-block"><span>Смена</span>${workModeSelectorView(true)}</div>
       <button class="travel-mode-toggle ${activeMode?'active':''}" data-action="toggle-travel-mode"><span><b>${activeMode?'Режим в пути включён':'Режим в пути'}</b><small>${activeMode?'Крупные действия и минимум второстепенного':'Увеличить главные кнопки и убрать визуальный шум'}</small></span><i>${activeMode?'Вкл':'Выкл'}</i></button>
       <div class="more-links">
         <button data-view="contacts"><b>☎</b><span><strong>Контакты</strong><small>Врачи, посты и отделения</small></span></button>
@@ -1579,6 +1594,12 @@ async function handleAction(action, el, e) {
   }
   if (action==='add') { modal={type:'quick',target:view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
+  if (action==='set-work-mode') {
+    state.settings.workMode=el.dataset.mode==='team'?'team':'solo';
+    save();
+    if(modal?.type==='more-menu') modal={type:'more-menu'};
+    return render(true);
+  }
   if (action==='toggle-travel-mode') { state.settings.travelMode=!state.settings.travelMode; save(); modal={type:'more-menu'}; return render(true); }
   if (action==='contact-add') { modal={type:'contact',contact:null}; return render(true); }
   if (action==='contact-edit') { modal={type:'contact',contact:el.dataset.contact}; return render(true); }
@@ -1947,7 +1968,7 @@ globalThis.__MEDFLOW_TEST__={
   getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
-  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton
+  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
 setInterval(()=>{ if(!modal && cloud.session && navigator.onLine && !cloud.syncing) syncCloudState(); },20000);
