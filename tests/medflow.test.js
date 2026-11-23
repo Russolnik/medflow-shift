@@ -667,6 +667,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 }
 
 {
+  const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','004_refresh_team_rpc_schema.sql'),'utf8');
+  assert.ok(migration.includes("notify pgrst, 'reload schema'"));
+}
+
+{
   const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','003_shared_shift_safe_sync.sql'),'utf8');
   assert.ok(migration.includes('medflow_update_shift'));
   assert.ok(migration.includes('for update'));
