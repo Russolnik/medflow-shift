@@ -98,6 +98,7 @@ let contactDepartmentFilter = 'all';
 let contactRoleFilter = 'all';
 let patientSearch = '';
 let contactSearch = '';
+let searchOpen = false;
 let modal = null;
 let renderedModalKey = '';
 let showCompleted = false;
@@ -691,7 +692,17 @@ function hasOperationSelection(form) {
   return primary==='operation'||[...form.querySelectorAll('[name="extra-direction"]:checked')].some(input=>input.value==='operation');
 }
 function searchBox(id,value,placeholder) {
-  return `<label class="search-box" for="${esc(id)}"><span aria-hidden="true">⌕</span><input id="${esc(id)}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" /></label>`;
+  return `<label class="search-box" for="${esc(id)}"><span aria-hidden="true">⌕</span><input id="${esc(id)}" value="${esc(value)}" placeholder="${esc(placeholder)}" aria-label="Поиск" autocomplete="off" enterkeyhint="search" /><button type="button" data-action="search-close" aria-label="Закрыть поиск">×</button></label>`;
+}
+function searchKindForView() { return ['today','directions'].includes(view)?'patient':view==='contacts'?'contact':''; }
+function searchToggleView() {
+  const kind=searchKindForView();if(!kind)return '';
+  const value=kind==='contact'?contactSearch:patientSearch;
+  return `<button class="icon-btn search-toggle ${searchOpen||value?'active':''}" data-action="search-toggle" aria-label="${searchOpen?'Скрыть поиск':'Открыть поиск'}">⌕</button>`;
+}
+function activeSearchView() {
+  const kind=searchKindForView();if(!kind||(!searchOpen&&!(kind==='contact'?contactSearch:patientSearch)))return '';
+  return searchBox(kind==='contact'?'contact-search':'patient-search',kind==='contact'?contactSearch:patientSearch,kind==='contact'?'Имя, номер, отделение или роль':'Фамилия, палата, врач или направление');
 }
 function directionOptions(selected='', includeSystem=false) {
   const items = includeSystem ? [...getDirections(), ...SYSTEM_STEPS] : getDirections();
@@ -1007,7 +1018,7 @@ function topbarView() {
   const inlineAdd = canEditTeam() && addButtonPosition() === 'inline';
   if (view !== 'today') {
     const title = view === 'inbox' ? 'Новое' : view === 'directions' ? 'Направления' : view === 'contacts' ? 'Контакты' : view === 'history' ? 'История' : 'Настройки';
-    return `<header class="topbar section-topbar"><h1>${title}</h1>${['inbox','directions'].includes(view)&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</header>`;
+    return `<header class="topbar section-topbar"><h1>${title}</h1><div class="topbar-actions">${searchToggleView()}${['inbox','directions'].includes(view)&&inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</div></header>`;
   }
   const progress = shiftProgress(state.patients);
   const taskPercent = value => progress.tasks.total ? (value / progress.tasks.total * 100).toFixed(2) : 0;
@@ -1030,8 +1041,7 @@ function topbarView() {
       </div>
       <p>Счётчик — пациенты, полоска — задачи. Удалённые ошибки не учитываются.</p>
     </details>
-    ${syncPillView()}
-    ${inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}
+    <div class="topbar-actions">${syncPillView()}${searchToggleView()}${inlineAdd?'<button class="icon-btn quick-add-btn" data-action="add" aria-label="Записать пациента">＋</button>':''}</div>
   </header>`;
 }
 function syncPillView() {
@@ -1055,7 +1065,7 @@ function todayView(active, completed) {
   const engaged = engagedPatients.length;
   return `
     ${pendingIncoming().length?`<button class="inbox-banner" data-view="inbox"><span><b>${pendingIncoming().length}</b><i>Новые поручения</i></span><strong>Посмотреть →</strong></button>`:''}
-    ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
+    ${activeSearchView()}
     ${departmentFiltersView()}
     ${engagedPatients.length ? `
       <div class="section-head workstream-head status-section working"><h2>В работе</h2><span>${engaged} вне палаты</span></div>
@@ -1106,10 +1116,10 @@ function directionsView() {
     return `<button data-scroll-direction="${esc(item.id)}"><span>${esc(item.label)}</span><b>${count}</b></button>`;
   }).join('');
   return `
-    ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
+    ${activeSearchView()}
     <div class="section-head directions-head"><div><h2>Реестр направлений</h2><span>раскрой нужную группу</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     ${departmentFiltersView()}
-    <div id="directions-index" class="directions-quick-index" aria-label="Быстрый переход по направлениям">${quickIndex}</div>
+    <div id="directions-index" class="directions-quick-index" aria-label="Быстрый переход по направлениям"><button class="directions-home" data-action="directions-home">Начало</button>${quickIndex}</div>
     <div class="direction-registry">${dirs.map(directionRegistryGroup).join('')}</div>
   `;
 }
@@ -1141,7 +1151,7 @@ function contactsView() {
     .filter(contact=>contactMatchesSearch(contact))
     .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
   return `<div class="contacts-toolbar"><div><h2>Контакты отделений</h2><span>${getContacts().length} сохранено</span></div><button class="primary-btn contact-add-btn" data-action="contact-add">＋ Добавить</button></div>
-    ${searchBox('contact-search',contactSearch,'Имя, номер, отделение или роль')}
+    ${activeSearchView()}
     <div class="filter-caption">Отделение</div><div class="filters">${departments.map(item=>`<button class="chip ${contactDepartmentFilter===item.id?'active':''}" data-contact-department="${esc(item.id)}">${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</button>`).join('')}</div>
     <div class="filter-caption">Роль</div><div class="filters">${roles.map(item=>`<button class="chip ${contactRoleFilter===item.id?'active':''}" data-contact-role="${esc(item.id)}">${esc(item.label)}</button>`).join('')}</div>
     <div class="contact-list">${contacts.map(contactCard).join('')||'<div class="empty compact-empty">Добавь врача, медсестру или санитара — номер будет доступен в одно нажатие</div>'}</div>`;
@@ -1663,7 +1673,7 @@ function modalView() {
 }
 
 function bind() {
-  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;modal=null;render();});
+  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;modal=null;searchOpen=false;render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
   document.querySelectorAll('[data-scroll-direction]').forEach(el=>el.onclick=()=>{
     const group=document.querySelector(`[data-direction-group="${CSS.escape(el.dataset.scrollDirection)}"]`);
@@ -1675,9 +1685,9 @@ function bind() {
   document.querySelectorAll('[data-contact-department]').forEach(el=>el.onclick=()=>{contactDepartmentFilter=el.dataset.contactDepartment; render(true);});
   document.querySelectorAll('[data-contact-role]').forEach(el=>el.onclick=()=>{contactRoleFilter=el.dataset.contactRole; render(true);});
   const patientSearchInput=document.getElementById('patient-search');
-  if(patientSearchInput) patientSearchInput.oninput=()=>rerenderSearch(patientSearchInput,'patient');
+  if(patientSearchInput) bindSearchInput(patientSearchInput,'patient');
   const contactSearchInput=document.getElementById('contact-search');
-  if(contactSearchInput) contactSearchInput.oninput=()=>rerenderSearch(contactSearchInput,'contact');
+  if(contactSearchInput) bindSearchInput(contactSearchInput,'contact');
   document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(true); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
@@ -1719,11 +1729,18 @@ function refreshOperationField(form) {
   const operation=hasOperationSelection(form);field.hidden=!operation;
   if(!operation){const select=field.querySelector('[name="block"]');if(select)select.value='';}
 }
-function rerenderSearch(input, kind) {
-  const value=input.value, cursor=input.selectionStart ?? value.length;
+function bindSearchInput(input, kind) {
+  input.oninput=()=>liveFilterSearch(input,kind);
+  input.onchange=()=>setTimeout(()=>{if(document.getElementById(input.id))render(true);},0);
+  input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();input.blur();}};
+  requestAnimationFrame(()=>{if(searchOpen&&document.activeElement!==input){input.focus();const end=input.value.length;input.setSelectionRange?.(end,end);}});
+}
+function liveFilterSearch(input, kind) {
+  const value=input.value;
   if(kind==='contact')contactSearch=value; else patientSearch=value;
-  render(true);
-  requestAnimationFrame(()=>{const next=document.getElementById(kind==='contact'?'contact-search':'patient-search');if(next){next.focus();next.setSelectionRange?.(cursor,cursor);}});
+  const query=value.trim().toLocaleLowerCase('ru');
+  const selector=kind==='contact'?'.contact-card':'.patient-card';
+  document.querySelectorAll(selector).forEach(card=>{card.hidden=Boolean(query)&&!card.textContent.toLocaleLowerCase('ru').includes(query);});
 }
 function armUndo(label) {
   undoEntry={state:clone(state),label};
@@ -1813,6 +1830,13 @@ async function handleAction(action, el, e) {
   }
   if (action==='add') { modal={type:'quick',target:workMode()==='team'||view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
+  if (action==='search-toggle') { searchOpen=!searchOpen; return render(true); }
+  if (action==='search-close') {
+    searchOpen=false;
+    if(searchKindForView()==='contact')contactSearch='';else patientSearch='';
+    return render(true);
+  }
+  if (action==='directions-home') { document.querySelector('.section-topbar')?.scrollIntoView({behavior:'smooth',block:'start'}); return; }
   if (action==='set-work-mode') {
     if(activeTeamShift()&&el.dataset.mode!=='team') { cloud.message='Сначала покинь общую смену в настройках'; view='settings'; modal=null; return render(true); }
     state.settings.workMode=el.dataset.mode==='team'?'team':'solo';

@@ -537,12 +537,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v41"));
+  assert.ok(sw.includes("medflow-shell-v42"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=41');
+  assert.equal(manifest.start_url,'./?pwa=42');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -608,7 +608,10 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('deferSyncForOpenForm()'));
   assert.ok(source.includes('captureModalDraft()'));
   assert.ok(source.includes('restoreModalDraft()'));
-  assert.ok(source.includes("searchBox('patient-search'"));
+  assert.ok(source.includes('data-action="search-toggle"'));
+  assert.ok(source.includes('data-action="search-close"'));
+  assert.ok(source.includes('liveFilterSearch(input,kind)'));
+  assert.ok(source.includes('data-action="directions-home"'));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
