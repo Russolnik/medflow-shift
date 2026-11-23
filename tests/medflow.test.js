@@ -154,7 +154,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(migrated.patients[0].id, 'legacy');
   assert.equal(migrated.archive.length, 1);
   assert.equal(migrated.archive[0].id, 'shift');
-  assert.equal(migrated.schemaVersion, 9);
+  assert.equal(migrated.schemaVersion, 10);
   assert.ok(Array.isArray(migrated.incoming));
   assert.ok(migrated.departments.length >= 1);
   assert.ok(Array.isArray(migrated.contacts));
@@ -535,12 +535,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v36"));
+  assert.ok(sw.includes("medflow-shell-v37"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=36');
+  assert.equal(manifest.start_url,'./?pwa=37');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -553,8 +553,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(appRoot.innerHTML.includes('Удалённые ошибки не учитываются'));
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
   assert.ok(appRoot.innerHTML.includes('class="fab"'));
-  assert.ok(appRoot.innerHTML.includes('data-view="settings"'));
-  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 6);
+  assert.ok(appRoot.innerHTML.includes('data-action="open-more"'));
+  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 4);
   assert.ok(appRoot.innerHTML.includes('data-view="inbox"'));
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
@@ -582,7 +582,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-department-filter'));
   assert.ok(source.includes('name="department"'));
   assert.ok(source.includes("mode === 'department'"));
-  assert.ok(source.includes("navButton('contacts'"));
+  assert.ok(source.includes("modal.type === 'more-menu'"));
   assert.ok(source.includes('data-action="contact-save"'));
   assert.ok(source.includes('href="${esc(href)}"'));
   assert.ok(source.includes('name="doctor"'));
@@ -628,6 +628,23 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(backup.version,1);
   assert.ok(Array.isArray(backup.state.patients));
   assert.ok(api.syncPillView().includes('sync-pill'));
+}
+
+{
+  const working={steps:[step('Рентген','in_progress','xray')]};
+  const waiting={steps:[step('Рентген','waiting','xray')]};
+  const handled={steps:[step('Рентген','done','xray')]};
+  assert.equal(api.directionPatientStatus(working,'xray'),'working');
+  assert.equal(api.directionPatientStatus(waiting,'xray'),'waiting');
+  assert.equal(api.directionPatientStatus(handled,'xray'),'handled');
+  assert.ok(api.moreNavButton().includes('data-action="open-more"'));
+}
+
+{
+  const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','002_shared_shifts.sql'),'utf8');
+  assert.ok(migration.includes('medflow_shift_members'));
+  assert.ok(migration.includes('medflow_create_shift_invite'));
+  assert.ok(migration.includes("role in ('owner','orderly','nurse','viewer')"));
 }
 
 console.log('MedFlow: все сценарии пройдены');

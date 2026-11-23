@@ -58,7 +58,7 @@ function clone(value) {
 }
 
 const seed = {
-  schemaVersion: 9,
+  schemaVersion: 10,
   shiftStartedAt: Date.now(),
   incoming: [],
   patients: [
@@ -86,7 +86,7 @@ const seed = {
   directions: clone(DEFAULT_DIRECTIONS),
   departments: clone(DEFAULT_DEPARTMENTS),
   contacts: [],
-  settings: { sortMode: 'priority', addButtonPosition: 'floating', ownDepartmentId: 'department-own', waitThresholds:clone(DEFAULT_WAIT_THRESHOLDS) }
+  settings: { sortMode: 'priority', addButtonPosition: 'floating', ownDepartmentId: 'department-own', travelMode:false, waitThresholds:clone(DEFAULT_WAIT_THRESHOLDS) }
 };
 
 let state = load();
@@ -418,7 +418,7 @@ function inferShiftStart(patients) {
 function normalizeState(value) {
   const next = value && typeof value === 'object' ? value : clone(seed);
   const incomingVersion = Number(next.schemaVersion) || 1;
-  next.schemaVersion = 9;
+  next.schemaVersion = 10;
   next.patients = Array.isArray(next.patients) ? next.patients.map(normalizePatient).filter(Boolean) : [];
   next.incoming = Array.isArray(next.incoming) ? next.incoming.map(normalizePatient).filter(Boolean) : [];
   next.shiftStartedAt = validTimestamp(next.shiftStartedAt) || inferShiftStart(next.patients) || Date.now();
@@ -431,6 +431,7 @@ function normalizeState(value) {
   next.settings = next.settings && typeof next.settings === 'object' ? next.settings : {};
   if (!SORT_MODES.includes(next.settings.sortMode)) next.settings.sortMode = 'priority';
   if (!ADD_BUTTON_POSITIONS.includes(next.settings.addButtonPosition)) next.settings.addButtonPosition = 'floating';
+  next.settings.travelMode = Boolean(next.settings.travelMode);
   const thresholds=next.settings.waitThresholds&&typeof next.settings.waitThresholds==='object'?next.settings.waitThresholds:{};
   const warningMinutes=Math.max(1,Math.round(Number(thresholds.warningMinutes)||DEFAULT_WAIT_THRESHOLDS.warningMinutes));
   const criticalMinutes=Math.max(warningMinutes+1,Math.round(Number(thresholds.criticalMinutes)||DEFAULT_WAIT_THRESHOLDS.criticalMinutes));
@@ -816,7 +817,7 @@ function render(preservePosition=false) {
   const active = sortPatients(state.patients.filter(p => !isComplete(p)));
   const completed = sortPatients(state.patients.filter(isComplete));
   document.getElementById('app').innerHTML = `
-    <main class="shell">
+    <main class="shell ${state.settings.travelMode?'travel-mode':''}">
       ${topbarView()}
       ${view === 'directions' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
@@ -826,9 +827,7 @@ function render(preservePosition=false) {
       ${navButton('today','⌂','Сегодня')}
       ${navButton('inbox','＋','Новое',pendingIncoming().length)}
       ${navButton('directions','⌘','Направления')}
-      ${navButton('contacts','☎','Контакты')}
-      ${navButton('history','↶','История')}
-      ${navButton('settings','⚙','Настройки')}
+      ${moreNavButton()}
     </nav>
     <input id="backup-file" class="visually-hidden" type="file" accept="application/json,.json" />
     ${undoView()}
@@ -845,6 +844,10 @@ function undoView() {
 }
 
 function navButton(id, icon, text, count=0) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}${count?`<i class="nav-count">${count>99?'99+':count}</i>`:''}</button>`; }
+function moreNavButton() {
+  const active=['contacts','history','settings'].includes(view);
+  return `<button class="nav-btn ${active?'active':''}" data-action="open-more"><b>•••</b>Ещё</button>`;
+}
 function topbarView() {
   const inlineAdd = addButtonPosition() === 'inline';
   if (view !== 'today') {
@@ -900,10 +903,10 @@ function todayView(active, completed) {
     ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
     ${departmentFiltersView()}
     ${engagedPatients.length ? `
-      <div class="section-head workstream-head"><h2>Сейчас вне палаты</h2><span>${engaged} задействовано</span></div>
+      <div class="section-head workstream-head status-section working"><h2>В работе</h2><span>${engaged} вне палаты</span></div>
       <div class="patient-list">${engagedPatients.map(compactPatientCard).join('')}</div>
     ` : ''}
-    <div class="section-head workstream-head queue-head"><h2>Очередь</h2>${sortControl(true)}</div>
+    <div class="section-head workstream-head queue-head status-section waiting"><h2>Ожидают</h2>${sortControl(true)}</div>
     <div class="patient-list">${queuedPatients.length ? queuedPatients.map(compactPatientCard).join('') : '<div class="empty compact-empty">Очередь свободна</div>'}</div>
     <section class="shift-summary" aria-label="Сводка смены">
       <div class="stat"><strong>${engaged}</strong><span>активных сейчас</span></div>
@@ -911,7 +914,7 @@ function todayView(active, completed) {
       <div class="stat"><strong>${inOr}</strong><span>в оперблоке</span></div>
     </section>
     <button class="completed-toggle" data-action="toggle-completed" aria-expanded="${showCompleted}">
-      <span>Выполнено сегодня</span>
+      <span>Обработано сегодня</span>
       <strong><span>${visibleCompleted.length}</span><i class="toggle-chevron ${showCompleted ? 'open' : ''}" aria-hidden="true"></i></strong>
     </button>
     ${showCompleted ? `<div class="patient-list" style="margin-top:10px">${visibleCompleted.map(compactPatientCard).join('') || '<div class="empty">Пока ничего</div>'}</div>` : ''}
@@ -941,20 +944,31 @@ function inboxView() {
 }
 
 function directionsView() {
-  const dirs = [{id:'all',label:'Все'}, ...getDirections(), {id:'other',label:'Другое'}];
-  const patients = state.patients.filter(p => patientMatchesDepartment(p) && patientMatchesSearch(p) && p.steps.some(s=>stepMatchesDirection(s,direction)));
-  const waiting = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && !isTerminalStep(s))));
-  const done = sortPatients(patients.filter(p => p.steps.some(s => stepMatchesDirection(s,direction) && isTerminalStep(s))));
+  const dirs = [...getDirections(), {id:'other',label:'Другое'}];
   return `
     ${searchBox('patient-search',patientSearch,'Фамилия, палата, врач или направление')}
-    <div class="section-head directions-head"><div><h2>По направлениям</h2><span>операции, процедуры и другое</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
-    <div class="filters">${dirs.map(d=>`<button class="chip ${direction===d.id?'active':''}" data-direction="${esc(d.id)}">${esc(d.label)}</button>`).join('')}</div>
+    <div class="section-head directions-head"><div><h2>Реестр направлений</h2><span>раскрой нужную группу</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
     ${departmentFiltersView()}
-    <div class="section-head"><h2>Ожидают</h2><span>${waiting.length}</span></div>
-    <div class="patient-list">${waiting.map(compactPatientCard).join('') || '<div class="empty">Никого не ожидает</div>'}</div>
-    <div class="section-head"><h2>Обработано сегодня</h2><span>${done.length}</span></div>
-    <div class="patient-list">${done.map(compactPatientCard).join('') || '<div class="empty">Пока ничего не обработано</div>'}</div>
+    <div class="direction-registry">${dirs.map(directionRegistryGroup).join('')}</div>
   `;
+}
+
+function directionPatientStatus(patient, directionId) {
+  const steps=(patient.steps||[]).filter(step=>stepMatchesDirection(step,directionId));
+  if(steps.some(step=>['in_progress','in_or','pickup'].includes(step.state))) return 'working';
+  if(steps.some(step=>!isTerminalStep(step))) return 'waiting';
+  return steps.some(isTerminalStep) ? 'handled' : '';
+}
+function directionRegistryGroup(item) {
+  const patients=sortPatients(state.patients.filter(patient=>patientMatchesDepartment(patient)&&patientMatchesSearch(patient)&&directionPatientStatus(patient,item.id)));
+  const working=patients.filter(patient=>directionPatientStatus(patient,item.id)==='working');
+  const waiting=patients.filter(patient=>directionPatientStatus(patient,item.id)==='waiting');
+  const handled=patients.filter(patient=>directionPatientStatus(patient,item.id)==='handled');
+  const content=(title,list,kind)=>`<section class="registry-section ${kind}"><div class="registry-section-head"><b>${title}</b><span>${list.length}</span></div>${list.length?`<div class="patient-list">${list.map(compactPatientCard).join('')}</div>`:'<div class="registry-empty">Нет</div>'}</section>`;
+  return `<details class="direction-group ${patients.length?'has-items':''}" ${item.id==='operation'&&patients.length?'open':''}>
+    <summary><div><span class="direction-mark ${esc(item.id)}" aria-hidden="true"></span><b>${esc(item.label)}</b></div><span class="direction-total">${patients.length}</span><i class="toggle-chevron" aria-hidden="true"></i></summary>
+    <div class="direction-group-body">${content('В работе',working,'working')}${content('Ожидают',waiting,'waiting')}${content('Обработано',handled,'handled')}</div>
+  </details>`;
 }
 
 function contactsView() {
@@ -1187,6 +1201,18 @@ function preopChecklistView() {
 }
 
 function modalView() {
+  if (modal.type === 'more-menu') {
+    const activeMode=Boolean(state.settings.travelMode);
+    return `<div class="modal-backdrop" data-action="close"><section class="modal more-menu" onclick="event.stopPropagation()">
+      <div class="more-menu-head"><div><h2>Ещё</h2><p class="modal-sub">Разделы и режим отображения</p></div><button class="secondary-btn more-close" data-action="close" aria-label="Закрыть">×</button></div>
+      <button class="travel-mode-toggle ${activeMode?'active':''}" data-action="toggle-travel-mode"><span><b>${activeMode?'Режим в пути включён':'Режим в пути'}</b><small>${activeMode?'Крупные действия и минимум второстепенного':'Увеличить главные кнопки и убрать визуальный шум'}</small></span><i>${activeMode?'Вкл':'Выкл'}</i></button>
+      <div class="more-links">
+        <button data-view="contacts"><b>☎</b><span><strong>Контакты</strong><small>Врачи, посты и отделения</small></span></button>
+        <button data-view="history"><b>↶</b><span><strong>История</strong><small>Завершённые смены и маршруты</small></span></button>
+        <button data-view="settings"><b>⚙</b><span><strong>Настройки</strong><small>Данные, синхронизация и справочники</small></span></button>
+      </div>
+    </section></div>`;
+  }
   if (modal.type === 'cloud-auth') {
     const authMode=['signup','recover'].includes(modal.authMode)?modal.authMode:'signin';
     const isSignup=authMode==='signup';
@@ -1430,7 +1456,7 @@ function modalView() {
 }
 
 function bind() {
-  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view; render();});
+  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;modal=null;render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
   document.querySelectorAll('[data-department-filter]').forEach(el=>el.onclick=()=>{departmentFilter=el.dataset.departmentFilter; render(true);});
   document.querySelectorAll('[data-contact-department]').forEach(el=>el.onclick=()=>{contactDepartmentFilter=el.dataset.contactDepartment; render(true);});
@@ -1552,6 +1578,8 @@ async function handleAction(action, el, e) {
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
   }
   if (action==='add') { modal={type:'quick',target:view==='inbox'?'inbox':'queue'}; return render(true); }
+  if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
+  if (action==='toggle-travel-mode') { state.settings.travelMode=!state.settings.travelMode; save(); modal={type:'more-menu'}; return render(true); }
   if (action==='contact-add') { modal={type:'contact',contact:null}; return render(true); }
   if (action==='contact-edit') { modal={type:'contact',contact:el.dataset.contact}; return render(true); }
   if (action==='contact-save') {
@@ -1919,7 +1947,7 @@ globalThis.__MEDFLOW_TEST__={
   getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
-  normalizeTimeInput,stepTimeLabel,patientCareFlags
+  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
 setInterval(()=>{ if(!modal && cloud.session && navigator.onLine && !cloud.syncing) syncCloudState(); },20000);
