@@ -152,7 +152,7 @@ begin
   if public.medflow_shift_role(target_shift) <> 'owner' then raise exception 'Owner role required'; end if;
   if member_role not in ('orderly','nurse','viewer') then raise exception 'Unsupported role'; end if;
   loop
-    invite_code := upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 8));
+    invite_code := upper(substr(gen_random_uuid()::text, 1, 8));
     begin
       insert into public.medflow_shift_invites(code, shift_id, role, created_by)
       values (invite_code, target_shift, member_role, auth.uid());

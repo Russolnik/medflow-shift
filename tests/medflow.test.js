@@ -667,11 +667,19 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(migration.includes('medflow_shift_members'));
   assert.ok(migration.includes('medflow_create_shift_invite'));
   assert.ok(migration.includes("role in ('owner','orderly','nurse','viewer')"));
+  assert.ok(!migration.includes('gen_random_bytes'));
 }
 
 {
   const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','004_refresh_team_rpc_schema.sql'),'utf8');
   assert.ok(migration.includes("notify pgrst, 'reload schema'"));
+}
+
+{
+  const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','005_fix_invite_code_generator.sql'),'utf8');
+  assert.ok(migration.includes('gen_random_uuid'));
+  assert.ok(!migration.includes('encode(gen_random_bytes'));
+  assert.ok(migration.includes('medflow_create_shift_invite'));
 }
 
 {
