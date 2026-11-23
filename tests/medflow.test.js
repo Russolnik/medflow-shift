@@ -535,12 +535,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v35"));
+  assert.ok(sw.includes("medflow-shell-v36"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=35');
+  assert.equal(manifest.start_url,'./?pwa=36');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -601,7 +601,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('name="entry-target"'));
   assert.ok(source.includes('},20000);'));
   assert.ok(source.includes('hasOpenWorkForm()'));
-  assert.ok(!source.includes('type="time"'));
+  assert.ok(source.includes('type="time"'));
+  assert.ok(source.includes('data-time-now'));
+  assert.ok(source.includes('deferSyncForOpenForm()'));
+  assert.ok(source.includes('captureModalDraft()'));
+  assert.ok(source.includes('restoreModalDraft()'));
   assert.ok(source.includes("searchBox('patient-search'"));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));

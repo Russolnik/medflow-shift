@@ -98,6 +98,7 @@ let contactRoleFilter = 'all';
 let patientSearch = '';
 let contactSearch = '';
 let modal = null;
+let renderedModalKey = '';
 let showCompleted = false;
 let undoEntry = null;
 let undoTimer = null;
@@ -221,17 +222,25 @@ function applyRemoteState(remote, message='Данные загружены из 
 function hasOpenWorkForm() {
   return Boolean(modal && !['sync-conflict','password-update','import-backup-confirm','confirm-delete','confirm-new-shift','confirm-reset','confirm-transition'].includes(modal.type));
 }
+function deferSyncForOpenForm() {
+  if (!hasOpenWorkForm()) return false;
+  cloud.status='pending';
+  cloud.message='Синхронизация продолжится после закрытия формы';
+  return true;
+}
 async function syncCloudState({preferRemote=false}={}) {
   if (cloud.syncing || !cloud.session?.user?.id) return;
   if (!navigator.onLine) { cloud.status='offline'; cloud.message='Изменения сохранены на устройстве'; return; }
-  if (hasOpenWorkForm()) { cloud.status='pending'; cloud.message='Синхронизация продолжится после закрытия формы'; return; }
+  if (deferSyncForOpenForm()) return;
   cloud.syncing = true;
   cloud.status = 'syncing';
   if (!modal && (view === 'settings' || view === 'today')) render(true);
   try {
     const ready = await ensureCloudSession();
     if (!ready) return;
+    if (deferSyncForOpenForm()) return;
     const rows = await cloudRequest(`/rest/v1/medflow_states?select=payload,client_updated_at,updated_at&user_id=eq.${encodeURIComponent(cloud.session.user.id)}&limit=1`);
+    if (deferSyncForOpenForm()) return;
     const remote = rows?.[0];
     const remoteAt = remote ? new Date(remote.client_updated_at || remote.updated_at).getTime() : 0;
     const remoteVersion=remote?new Date(remote.updated_at).getTime():0;
@@ -515,7 +524,7 @@ function readTimeChoice(fd,name='time') {
 }
 function timeChoice(name='time',step={},label='Время') {
   const flexible=Boolean(step?.timeFlexible&&!step?.time);
-  return `<div class="field time-choice"><label>${esc(label)}</label><div class="time-choice-row"><input type="text" inputmode="numeric" name="${esc(name)}" value="${esc(step?.time||'')}" placeholder="08:30" pattern="(?:[01]?\\d|2[0-3]):[0-5]\\d" ${flexible?'disabled':''} data-time-input="${esc(name)}" /><label class="no-time"><input type="checkbox" name="${esc(name)}-none" data-time-none="${esc(name)}" ${flexible?'checked':''}/><span>Без времени</span></label></div></div>`;
+  return `<div class="field time-choice"><label>${esc(label)}</label><div class="time-choice-row"><input type="time" step="300" name="${esc(name)}" value="${esc(step?.time||'')}" ${flexible?'disabled':''} data-time-input="${esc(name)}" /><div class="time-choice-actions"><button type="button" class="time-now" data-time-now="${esc(name)}">Сейчас</button><label class="no-time"><input type="checkbox" name="${esc(name)}-none" data-time-none="${esc(name)}" ${flexible?'checked':''}/><span>Без времени</span></label></div></div></div>`;
 }
 function entryTargetChoice(selected='queue') {
   return `<fieldset class="entry-target full"><legend>Куда добавить</legend><div><label><input type="radio" name="entry-target" value="queue" ${selected!=='inbox'?'checked':''}/><span><b>В очередь</b><small>Сразу появится на главной</small></span></label><label><input type="radio" name="entry-target" value="inbox" ${selected==='inbox'?'checked':''}/><span><b>В Новое</b><small>Сначала потребуется принять</small></span></label></div></fieldset>`;
@@ -767,7 +776,42 @@ function actionLabel(step) {
   return 'Начать';
 }
 
+function modalDraftKey(value=modal) {
+  if (!value) return '';
+  return [value.type||'',value.patient||'',value.contact||'',value.mode||'',value.stopAction||''].join(':');
+}
+function captureModalDraft() {
+  const key=modalDraftKey();
+  if(!key || key!==renderedModalKey || !hasOpenWorkForm()) return;
+  const form=document.querySelector?.('.modal form');
+  if(!form)return;
+  const controls=[...form.querySelectorAll('input[name],select[name],textarea[name]')];
+  const focused=document.activeElement;
+  modal.formDraft={
+    key,
+    values:controls.map(control=>({value:control.value,checked:Boolean(control.checked)})),
+    focusIndex:controls.indexOf(focused),
+    selectionStart:Number.isFinite(focused?.selectionStart)?focused.selectionStart:null,
+    selectionEnd:Number.isFinite(focused?.selectionEnd)?focused.selectionEnd:null
+  };
+}
+function restoreModalDraft() {
+  const draft=modal?.formDraft, key=modalDraftKey();
+  if(!draft || draft.key!==key)return;
+  const form=document.querySelector?.('.modal form');
+  if(!form)return;
+  const controls=[...form.querySelectorAll('input[name],select[name],textarea[name]')];
+  controls.forEach((control,index)=>{
+    const saved=draft.values[index]; if(!saved)return;
+    if(['checkbox','radio'].includes(control.type))control.checked=saved.checked;
+    else control.value=saved.value;
+  });
+  const focus=controls[draft.focusIndex];
+  if(focus)requestAnimationFrame(()=>{focus.focus();if(draft.selectionStart!==null)focus.setSelectionRange?.(draft.selectionStart,draft.selectionEnd);});
+}
+
 function render(preservePosition=false) {
+  captureModalDraft();
   const position = preservePosition ? captureViewPosition() : null;
   const active = sortPatients(state.patients.filter(p => !isComplete(p)));
   const completed = sortPatients(state.patients.filter(isComplete));
@@ -790,7 +834,9 @@ function render(preservePosition=false) {
     ${undoView()}
     ${modal ? modalView() : ''}
   `;
+  restoreModalDraft();
   bind();
+  renderedModalKey=modalDraftKey();
   restoreViewPosition(position);
 }
 
@@ -1289,8 +1335,8 @@ function modalView() {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <h2>Цепочка · ${esc(p?.surname || '')}</h2><p class="modal-sub">Направление текущего этапа можно менять до начала выполнения</p>
-      <div class="route-editor">${modal.steps.map((s,i)=>{const editable=canEditRouteStep(s);const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';const hint=!editable?'Выполняемый или завершённый этап защищён':!movable?'Текущий этап можно изменить, но нельзя переставить':'Можно изменить, переставить или удалить';return `<div class="route-editor-item ${editable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><select class="route-type-select" data-route-type="${i}" aria-label="Направление этапа ${i+1}" ${editable?'':'disabled'}>${directionOptions(s.type,true)}</select><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" ${editable?'':'disabled'} /><div class="route-time-control"><input class="route-time-input" type="text" inputmode="numeric" data-route-time="${i}" value="${esc(s.time || '')}" placeholder="08:30" aria-label="Время этапа ${i+1}" ${!editable||s.timeFlexible?'disabled':''} /><label><input type="checkbox" data-route-time-none="${i}" ${s.timeFlexible?'checked':''} ${editable?'':'disabled'} />без времени</label></div><small>${hint}</small></div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
-      <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><div class="route-time-control"><input id="route-time" type="text" inputmode="numeric" placeholder="08:30" aria-label="Время нового этапа" /><label><input id="route-time-none" type="checkbox" />без времени</label></div><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
+      <div class="route-editor">${modal.steps.map((s,i)=>{const editable=canEditRouteStep(s);const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';const hint=!editable?'Выполняемый или завершённый этап защищён':!movable?'Текущий этап можно изменить, но нельзя переставить':'Можно изменить, переставить или удалить';return `<div class="route-editor-item ${editable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><select class="route-type-select" data-route-type="${i}" aria-label="Направление этапа ${i+1}" ${editable?'':'disabled'}>${directionOptions(s.type,true)}</select><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" ${editable?'':'disabled'} /><div class="route-time-control"><input class="route-time-input" type="time" step="300" data-route-time="${i}" value="${esc(s.time || '')}" aria-label="Время этапа ${i+1}" ${!editable||s.timeFlexible?'disabled':''} /><label><input type="checkbox" data-route-time-none="${i}" ${s.timeFlexible?'checked':''} ${editable?'':'disabled'} />без времени</label></div><small>${hint}</small></div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
+      <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><div class="route-time-control"><input id="route-time" type="time" step="300" aria-label="Время нового этапа" /><label><input id="route-time-none" type="checkbox" />без времени</label></div><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
       <div class="modal-actions"><button class="secondary-btn" data-action="details" data-patient="${modal.patient}">Назад</button><button class="primary-btn" data-action="route-save" data-patient="${modal.patient}">Сохранить цепочку</button></div>
     </section></div>`;
   }
@@ -1398,7 +1444,8 @@ function bind() {
   document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
   document.querySelectorAll('[data-route-time-none]').forEach(el=>el.onchange=()=>{const index=Number(el.dataset.routeTimeNone),step=modal?.type==='route'?modal.steps[index]:null,input=document.querySelector(`[data-route-time="${index}"]`);if(step){step.timeFlexible=el.checked;if(el.checked)step.time='';}if(input){input.disabled=el.checked;input.value=el.checked?'':step?.time||'';}});
   document.querySelectorAll('[data-route-type]').forEach(el=>el.onchange=()=>{ const index=Number(el.dataset.routeType),step=modal?.type==='route'?modal.steps[index]:null;if(changeRouteStepType(step,el.value)){const title=document.querySelector(`[data-route-title="${index}"]`);if(title)title.value=step.title;} });
-  document.querySelectorAll('[data-time-none]').forEach(el=>el.onchange=()=>{const input=document.querySelector(`[data-time-input="${el.dataset.timeNone}"]`);if(input){input.disabled=el.checked;if(el.checked)input.value='';}});
+  document.querySelectorAll('[data-time-none]').forEach(el=>{const update=()=>{const input=document.querySelector(`[data-time-input="${el.dataset.timeNone}"]`);if(input){input.disabled=el.checked;if(el.checked)input.value='';}};el.onchange=update;update();});
+  document.querySelectorAll('[data-time-now]').forEach(el=>el.onclick=()=>{const name=el.dataset.timeNow,input=document.querySelector(`[data-time-input="${name}"]`),none=document.querySelector(`[data-time-none="${name}"]`);if(!input)return;if(none)none.checked=false;input.disabled=false;const now=new Date();input.value=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;});
   document.querySelectorAll('#quick-form,#patient-form').forEach(form=>{const update=()=>refreshOperationField(form);form.querySelectorAll('[name="type"],[name="extra-direction"]').forEach(el=>el.onchange=update);update();});
   const routeTimeNone=document.getElementById('route-time-none');
   if(routeTimeNone)routeTimeNone.onchange=()=>{const input=document.getElementById('route-time');if(input){input.disabled=routeTimeNone.checked;if(routeTimeNone.checked)input.value='';}};
@@ -1442,7 +1489,7 @@ function rerenderSearch(input, kind) {
 function armUndo(label) {
   undoEntry={state:clone(state),label};
   if(undoTimer)clearTimeout(undoTimer);
-  undoTimer=setTimeout(()=>{undoEntry=null;undoTimer=null;if(document.getElementById('app'))render(true);},UNDO_TIMEOUT);
+  undoTimer=setTimeout(()=>{undoEntry=null;undoTimer=null;if(document.getElementById('app')&&!modal)render(true);},UNDO_TIMEOUT);
 }
 function clearUndo() { if(undoTimer)clearTimeout(undoTimer);undoTimer=null;undoEntry=null; }
 function log(p,text) { p.events ||= []; p.events.push({at:Date.now(),text}); }

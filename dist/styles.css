@@ -194,8 +194,11 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .modal-actions button { flex:1; }
 .time-choice { grid-column:1/-1; }
 .time-choice-row { display:grid; grid-template-columns:1fr; gap:7px; align-items:center; }
-.time-choice-row input[type="text"] { min-width:0; }
-.time-choice-row .no-time { width:100%; min-height:42px; display:flex; align-items:center; gap:9px; padding:8px 11px; border:1px solid rgba(255,255,255,.08); border-radius:12px; color:#cbd4d6; background:rgba(255,255,255,.018); white-space:nowrap; cursor:pointer; }
+.time-choice-row input[type="time"] { min-width:0; color-scheme:dark; font-size:16px; }
+.time-choice-actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.time-now,.time-choice-row .no-time { width:100%; min-height:42px; border:1px solid rgba(255,255,255,.08); border-radius:12px; color:#cbd4d6; background:rgba(255,255,255,.018); cursor:pointer; }
+.time-now { padding:8px 11px; font:inherit; font-size:11px; font-weight:800; }
+.time-choice-row .no-time { display:flex; align-items:center; justify-content:center; gap:9px; padding:8px 11px; white-space:nowrap; }
 .time-choice-row .no-time input { width:auto; min-height:0; padding:0; accent-color:#c8d5d6; }
 .care-flags { display:grid; gap:8px; margin-top:4px; }
 .care-flags legend { color:var(--muted); font-size:11px; font-weight:750; }
