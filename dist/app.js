@@ -1402,34 +1402,31 @@ function compactPatientCard(p) {
   const next = nextWaitingStep(p);
   const urgent = step?.urgent || p.priority === 'urgent';
   const orStep = p.steps.find(s => ['in_or','pickup'].includes(s.state));
-  const currentIndex = step ? p.steps.indexOf(step) : -1;
-  const upcoming = currentIndex >= 0
-    ? p.steps.slice(currentIndex + 1).filter(s => !isTerminalStep(s)).slice(0, 2)
-    : [];
   const compactTitle = step?.state === 'in_progress' ? step.title : step ? stepTitle(step) : 'Маршрут завершён';
-  const doctor = patientDoctor(p);
-  const missing = patientMissingFields(p);
   return `<article class="patient-card compact-card ${hasTodayOperation(p)?'operation-today':''} ${urgent?'urgent':''}" data-card-details="${esc(p.id)}" tabindex="0" aria-label="Открыть подробности: ${esc(p.surname)}">
     <div class="compact-head">
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
-      <div class="badges">${p.departmentId?`<span class="badge department ${isOwnDepartment(p)?'own':''}" title="${esc(departmentLabel(p.departmentId))}">${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · НАШЕ':''}</span>`:''}${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
+      <div class="badges">${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${hasTodayOperation(p)&&p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
     </div>
-    ${teamPatientMetaView(p)}
     <div class="compact-body">
       <div class="compact-copy">
         <div class="current-label">Сейчас</div>
         <div class="compact-title">${esc(compactTitle)}</div>
-        ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'способ уточнить')}</span>${stepTimeLabel(step)?`<span>◷ ${esc(stepTimeLabel(step))}</span>`:''}</div>${patientCareFlags(p).length?`<div class="care-flag-badges compact-care-flags">${patientCareFlags(p).map(item=>`<span title="${esc(item.hint)}">${item.icon} ${esc(item.label)}</span>`).join('')}</div>`:''}${missing.length?`<button class="missing-data" data-action="edit-patient" data-patient="${esc(p.id)}">⚠ Уточнить: ${esc(missing.join(', '))}</button>`:''}` : ''}
-        ${doctor?`<div class="compact-doctor"><span>Врач: ${esc(doctor.name)}${doctor.departmentId?` · ${esc(departmentLabel(doctor.departmentId))}`:''}</span>${phoneHref(doctor.phone)?`<a href="${esc(phoneHref(doctor.phone))}" aria-label="Позвонить врачу ${esc(doctor.name)}">☎</a>`:''}</div>`:''}
-        ${upcoming.length ? `<div class="compact-next">Далее: ${upcoming.map(s=>`${esc(s.title)}${stepTimeLabel(s)?` · ${esc(stepTimeLabel(s))}`:''}`).join(' → ')}</div>` : ''}
+        ${step ? `<div class="compact-meta"><span>↗ ${esc(p.transport || 'уточнить')}</span>${stepTimeLabel(step)?`<span>◷ ${esc(stepTimeLabel(step))}</span>`:''}</div>${patientCareFlags(p).length?`<div class="care-flag-badges compact-care-flags">${patientCareFlags(p).map(item=>`<span title="${esc(`${item.label}: ${item.hint}`)}" aria-label="${esc(`${item.label}: ${item.hint}`)}">${item.icon}</span>`).join('')}</div>`:''}` : ''}
+        ${teamPatientCompactView(p)}
       </div>
       <div class="compact-controls">
         ${operationTimersView(orStep)}
         ${step && canOperateTeam() ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : !step && lastTerminal && canOperateTeam() ? `<button class="secondary-btn restore-btn" data-action="restore-step" data-patient="${p.id}" data-step="${lastTerminal.id}" data-source="current">Вернуть в очередь</button>` : ''}
-        <div class="compact-tools"><button class="secondary-btn details-btn" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать">✎</button><button class="secondary-btn details-btn" data-action="details" data-patient="${p.id}" aria-label="Подробности">•••</button></div>
+        <button class="secondary-btn compact-edit" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать данные пациента">✎</button>
       </div>
     </div>
   </article>`;
+}
+
+function teamPatientCompactView(patient) {
+  if(workMode()!=='team' || (!patient.assignedTo && !patient.assignedToName)) return '';
+  return `<div class="compact-assignee">В работе: ${esc(actorName(patient.assignedTo,patient.assignedToName)||'сотрудник')}</div>`;
 }
 
 function teamPatientMetaView(patient) {
@@ -1449,7 +1446,7 @@ function patientCard(p) {
   return `<article class="patient-card ${hasTodayOperation(p)?'operation-today':''} ${urgent?'urgent':''}">
     <div class="patient-top">
       <div class="row between"><div><div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room||'?')}</span></div></div>
-      <div class="badges">${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div></div>
+      <div class="badges">${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${hasTodayOperation(p)&&p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div></div>
     </div>
     <div class="route">${p.steps.map((s,i)=>`<span class="step ${s.state==='done'?'done':s===step?'active':''}"><i>${s.state==='done'?'✓':i+1}</i>${esc(s.title)}</span>`).join('')}</div>
     <div class="current">
@@ -1582,9 +1579,11 @@ function modalView() {
     const p = state.patients.find(x => x.id === modal.patient);
     if (!p) return '';
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
-      <div class="row between"><div><h2>${esc(p.surname)} · палата ${esc(p.room || 'уточнить')}</h2><p class="modal-sub">Полная карточка пациента</p></div>${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:''}</div>
+      <div class="row between"><div><h2>${esc(p.surname)} · палата ${esc(p.room || 'уточнить')}</h2><p class="modal-sub">Полная карточка пациента</p></div>${hasTodayOperation(p)&&p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:''}</div>
       <div class="detail-block"><div class="current-label">Маршрут на сегодня</div><div class="route-detail">${p.steps.map((s,i)=>`<div class="route-detail-item ${s.state==='done'?'done':s===currentStep(p)?'active':''}"><span>${s.state==='done'?'✓':i+1}</span><b>${esc(s.title)}${stepTimeLabel(s)?` <small>· ${esc(stepTimeLabel(s))}</small>`:''}</b></div>`).join('')}</div></div>
       <div class="detail-grid"><div><span>Отделение</span><b>${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · наше':''}</b></div><div><span>Врач</span><b>${esc(patientDoctor(p)?.name||'Не указан')}</b></div><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
+      ${teamPatientMetaView(p)}
+      ${patientMissingFields(p).length?`<div class="detail-warning">⚠ Уточнить: ${esc(patientMissingFields(p).join(', '))}</div>`:''}
       ${patientCareFlags(p).length?`<div class="care-flag-badges">${patientCareFlags(p).map(item=>`<span>${item.icon} ${esc(item.label)}</span>`).join('')}</div>`:''}
       ${p.note?`<div class="note">${esc(p.note)}</div>`:''}
       <div class="patient-list detail-actions">
@@ -2376,7 +2375,7 @@ globalThis.__MEDFLOW_TEST__={
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
   normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice,
-  operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName
+  operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName,compactPatientCard,teamPatientCompactView
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
 setInterval(()=>{ if(!activeTeamShift()&&!modal&&cloud.session&&navigator.onLine&&!cloud.syncing) syncCloudState(); },20000);

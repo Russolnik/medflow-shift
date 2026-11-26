@@ -537,12 +537,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v43"));
+  assert.ok(sw.includes("medflow-shell-v44"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=43');
+  assert.equal(manifest.start_url,'./?pwa=44');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -677,6 +677,23 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.patientMatchesBlock(angio,'op'),false);
   assert.equal(api.safeDisplayName('worker@example.com'),'');
   assert.equal(api.safeDisplayName('Михаил'),'Михаил');
+}
+
+{
+  const patient={
+    id:'compact-one',surname:'Смирнова',room:'4',departmentId:'gxo',doctorName:'Иванов',transport:'Кресло',
+    priority:'operation',block:'op',pinned:false,note:'Подробная заметка',careFlags:[],
+    steps:[step('Операция','active','operation')]
+  };
+  const html=api.compactPatientCard(patient);
+  assert.ok(html.includes('Смирнова'));
+  assert.ok(html.includes('п.4'));
+  assert.ok(html.includes('ОПРБЛК'));
+  assert.ok(html.includes('Кресло'));
+  assert.ok(!html.includes('Врач:'));
+  assert.ok(!html.includes('Подробная заметка'));
+  assert.ok(!html.includes('compact-next'));
+  assert.equal(api.teamPatientCompactView(patient),'');
 }
 
 {
