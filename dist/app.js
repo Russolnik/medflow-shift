@@ -4,6 +4,8 @@ const SYNC_META_KEY = 'medflow-sync-meta-v1';
 const SYNC_STATE_KEY = 'medflow-sync-state-v2';
 const TEAM_STORAGE_KEY = 'medflow-team-session-v1';
 const RETRY_DELAYS = [5000, 15000, 30000];
+const TEAM_POLL_INTERVAL = 5000;
+const TEAM_LIVE_RECONNECT = 4000;
 const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
 
@@ -93,7 +95,8 @@ const seed = {
 let state = load();
 let view = 'today';
 let direction = 'all';
-let departmentFilter = ownDepartmentId();
+let departmentFilter = 'all';
+let blockFilter = 'all';
 let contactDepartmentFilter = 'all';
 let contactRoleFilter = 'all';
 let patientSearch = '';
@@ -117,6 +120,12 @@ let cloud = {
   lastSyncedAt: syncMeta.lastSyncAt || 0
 };
 let team = loadTeamSession();
+let teamLiveSocket = null;
+let teamLiveHeartbeat = null;
+let teamLiveReconnect = null;
+let teamNotice = null;
+let teamNoticeTimer = null;
+let teamIgnoreRealtimeUntil = 0;
 
 function loadTeamSession() {
   try {
@@ -137,10 +146,12 @@ function canEditTeam() { return !activeTeamShift()||['owner','orderly','nurse'].
 function currentActor() {
   const userId=cloud.session?.user?.id||'';
   const member=team.members.find(item=>item.user_id===userId);
-  return {id:userId,name:member?.display_name||team.displayName||sessionEmail()||'Сотрудник',role:member?.role||team.role||''};
+  const metadata=cloud.session?.user?.user_metadata||{};
+  return {id:userId,name:safeDisplayName(member?.display_name||team.displayName||metadata.display_name||metadata.full_name||metadata.name)||'Сотрудник',role:member?.role||team.role||''};
 }
 function memberById(id) { return team.members.find(item=>item.user_id===id)||null; }
-function actorName(id,fallback='') { return memberById(id)?.display_name||fallback||''; }
+function safeDisplayName(value='') { const name=String(value||'').trim(); return name&&!name.includes('@')?name:''; }
+function actorName(id,fallback='') { return safeDisplayName(memberById(id)?.display_name)||safeDisplayName(fallback)||''; }
 function roleLabel(role) { return ({owner:'Владелец смены',orderly:'Санитар',nurse:'Медсестра',viewer:'Только просмотр'})[role]||'Участник'; }
 function queueTeamRelease(patientId) {
   if(!activeTeamShift()||!patientId)return;
@@ -154,6 +165,53 @@ async function flushTeamReleases() {
     catch { remaining.push(patientId); }
   }
   storeTeamSession({pendingReleases:remaining});
+}
+
+function showTeamNotice(message='Общая смена обновлена') {
+  teamNotice=message;
+  if(teamNoticeTimer) clearTimeout(teamNoticeTimer);
+  teamNoticeTimer=setTimeout(()=>{teamNotice=null;teamNoticeTimer=null;if(!modal)render(true);},5000);
+  if(document.hidden && 'Notification' in globalThis && Notification.permission==='granted') {
+    try { new Notification('MedFlow', {body:message,tag:'medflow-team-update',silent:true}); } catch {}
+  }
+}
+function notificationPermission() {
+  return 'Notification' in globalThis ? Notification.permission : 'unsupported';
+}
+function disconnectTeamRealtime() {
+  if(teamLiveHeartbeat) clearInterval(teamLiveHeartbeat);
+  if(teamLiveReconnect) clearTimeout(teamLiveReconnect);
+  teamLiveHeartbeat=null;teamLiveReconnect=null;
+  if(teamLiveSocket) { try { teamLiveSocket.onclose=null;teamLiveSocket.close(); } catch {} }
+  teamLiveSocket=null;
+}
+function connectTeamRealtime() {
+  if(!('WebSocket' in globalThis)||!activeTeamShift()||!navigator.onLine||teamLiveSocket?.readyState===WebSocket.OPEN||teamLiveSocket?.readyState===WebSocket.CONNECTING)return;
+  disconnectTeamRealtime();
+  const topic=`realtime:public:medflow_shifts:id=eq.${team.shiftId}`;
+  const socket=new WebSocket(`${SUPABASE_URL.replace('https://','wss://')}/realtime/v1/websocket?apikey=${encodeURIComponent(SUPABASE_PUBLISHABLE_KEY)}&vsn=1.0.0`);
+  teamLiveSocket=socket;
+  let ref=1;
+  const send=(event,payload={},sendTopic=topic)=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({topic:sendTopic,event,payload,ref:String(ref++)}));};
+  socket.onopen=()=>{
+    send('phx_join',{config:{broadcast:{self:false},presence:{key:cloud.session?.user?.id||''},postgres_changes:[{event:'UPDATE',schema:'public',table:'medflow_shifts',filter:`id=eq.${team.shiftId}`}]},access_token:cloud.session?.access_token||''});
+    teamLiveHeartbeat=setInterval(()=>send('heartbeat',{},'phoenix'),25000);
+  };
+  socket.onmessage=event=>{
+    let message;try{message=JSON.parse(event.data);}catch{return;}
+    if(!['postgres_changes','UPDATE'].includes(message?.event))return;
+    const record=message?.payload?.data?.record||message?.payload?.record;
+    if(record?.id&&record.id!==team.shiftId)return;
+    if(Date.now()<teamIgnoreRealtimeUntil)return;
+    showTeamNotice('Появились изменения в общей смене');
+    syncSharedShift();
+    if(!modal)render(true);
+  };
+  socket.onclose=()=>{
+    if(teamLiveHeartbeat)clearInterval(teamLiveHeartbeat);teamLiveHeartbeat=null;teamLiveSocket=null;
+    if(activeTeamShift()&&navigator.onLine)teamLiveReconnect=setTimeout(connectTeamRealtime,TEAM_LIVE_RECONNECT);
+  };
+  socket.onerror=()=>{try{socket.close();}catch{}};
 }
 
 function load() {
@@ -240,6 +298,7 @@ async function fetchTeamMembers() {
   if(!rows?.length) throw new Error('Участие в общей смене не найдено');
   const own=rows.find(item=>item.user_id===cloud.session?.user?.id);
   storeTeamSession({members:rows,role:own?.role||team.role,displayName:own?.display_name||team.displayName});
+  connectTeamRealtime();
   return rows;
 }
 async function discoverTeamShift() {
@@ -277,10 +336,12 @@ async function leaveTeamShift() {
   if(teamRole()==='owner') await cloudRequest(`/rest/v1/medflow_shifts?id=eq.${encodeURIComponent(team.shiftId)}`,{method:'DELETE'});
   else await cloudRequest(`/rest/v1/medflow_shift_members?shift_id=eq.${encodeURIComponent(team.shiftId)}&user_id=eq.${encodeURIComponent(cloud.session.user.id)}`,{method:'DELETE'});
   storeTeamSession({shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null});
+  disconnectTeamRealtime();
   state.settings.workMode='solo'; save();
 }
 async function pushSharedShift(expectedVersion=team.remoteVersion) {
   if(!activeTeamShift()||!navigator.onLine||!canEditTeam()) return false;
+  teamIgnoreRealtimeUntil=Date.now()+1800;
   const result=await teamRpc('medflow_update_shift',{target_shift:team.shiftId,expected_updated_at:expectedVersion||null,next_payload:state});
   if(!result?.ok) return result||{ok:false};
   const syncedAt=Date.now();
@@ -431,6 +492,7 @@ async function signOutCloud() {
     if (cloud.session?.access_token && navigator.onLine) await cloudRequest('/auth/v1/logout', {method:'POST'});
   } catch {}
   clearCloudRetry();
+  disconnectTeamRealtime();
   storeCloudSession(null);
   cloud.status = navigator.onLine ? 'local' : 'offline';
   cloud.message = 'Облачная сессия завершена. Локальные данные сохранены';
@@ -746,21 +808,28 @@ function patientTimeMinutes(patient) {
   const times = source.map(step => parseTime(step.time)).filter(value => value !== null);
   return times.length ? Math.min(...times) : null;
 }
+function operationBlockRank(patient) {
+  if(!hasTodayOperation(patient)) return 9;
+  return patient.block==='op'?0:patient.block==='angio'?1:2;
+}
+function compareOperationBlocks(a,b) {
+  return operationBlockRank(a)-operationBlockRank(b);
+}
 function comparePatients(a, b, mode=state.settings.sortMode) {
-  if (mode === 'priority') return score(b) - score(a);
+  if (mode === 'priority') return score(b) - score(a) || compareOperationBlocks(a,b) || String(a.surname||'').localeCompare(String(b.surname||''),'ru');
   const fixedPriority = patient => patient.pinned ? 3 : (currentStep(patient)?.urgent || patient.priority === 'urgent') ? 2 : hasTodayOperation(patient) ? 1 : 0;
   const priorityDifference = fixedPriority(b) - fixedPriority(a);
   if (priorityDifference) return priorityDifference;
   if (mode === 'department') {
     const departmentDifference = departmentLabel(a.departmentId).localeCompare(departmentLabel(b.departmentId), 'ru');
-    return departmentDifference || score(b) - score(a);
+    return departmentDifference || score(b) - score(a) || compareOperationBlocks(a,b);
   }
   const aTime = patientTimeMinutes(a), bTime = patientTimeMinutes(b);
   if (aTime === null && bTime === null) return score(b) - score(a);
   if (aTime === null) return 1;
   if (bTime === null) return -1;
   const timeDifference = mode === 'time-desc' ? bTime - aTime : aTime - bTime;
-  return timeDifference || score(b) - score(a);
+  return timeDifference || score(b) - score(a) || compareOperationBlocks(a,b);
 }
 function sortPatients(patients, mode=state.settings.sortMode) {
   return [...patients].sort((a,b) => comparePatients(a,b,mode));
@@ -997,6 +1066,7 @@ function render(preservePosition=false) {
     </nav>
     <input id="backup-file" class="visually-hidden" type="file" accept="application/json,.json" />
     ${undoView()}
+    ${teamNoticeView()}
     ${modal ? modalView() : ''}
   `;
   restoreModalDraft();
@@ -1007,6 +1077,9 @@ function render(preservePosition=false) {
 
 function undoView() {
   return undoEntry ? `<div class="undo-toast" role="status"><span>${esc(undoEntry.label)}</span><button data-action="undo-last">Отменить</button></div>` : '';
+}
+function teamNoticeView() {
+  return teamNotice ? `<button class="team-notice" data-action="team-notice-open" role="status"><span>${esc(teamNotice)}</span><b>Обновить</b></button>` : '';
 }
 
 function navButton(id, icon, text, count=0) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}${count?`<i class="nav-count">${count>99?'99+':count}</i>`:''}</button>`; }
@@ -1051,13 +1124,18 @@ function syncPillView() {
   const time=savedAt ? ` · ${fmtClock(savedAt)}` : '';
   return `<button class="sync-pill ${esc(status)}" data-action="cloud-status" title="${esc(cloud.message||cloudStatusLabel())}"><i aria-hidden="true"></i><span>${labels[status]||'Облако'}${time}</span></button>`;
 }
-function departmentFiltersView() {
+function patientMatchesBlock(patient, selected=blockFilter) {
+  return selected==='all' || (hasTodayOperation(patient) && patient.block===selected);
+}
+function departmentFiltersView(includeBlock=false) {
   const filters = [...getDepartments(), {id:'all',label:'Все отделения'}, {id:'none',label:'Не указано'}];
-  return `<label class="department-filter-wrap"><span>Отделение</span><span class="department-select"><select data-department-filter aria-label="Фильтр по отделению">${filters.map(item=>`<option value="${esc(item.id)}" ${departmentFilter===item.id?'selected':''}>${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</option>`).join('')}</select><i aria-hidden="true"></i></span></label>`;
+  const department=`<label class="department-filter-wrap"><span>Отделение</span><span class="department-select"><select data-department-filter aria-label="Фильтр по отделению">${filters.map(item=>`<option value="${esc(item.id)}" ${departmentFilter===item.id?'selected':''}>${esc(item.label)}${item.id===ownDepartmentId()?' · наше':''}</option>`).join('')}</select><i aria-hidden="true"></i></span></label>`;
+  const blocks=`<label class="department-filter-wrap block-filter-wrap"><span>Оперблок</span><span class="department-select"><select data-block-filter aria-label="Фильтр по оперблоку"><option value="all" ${blockFilter==='all'?'selected':''}>Все</option><option value="op" ${blockFilter==='op'?'selected':''}>ОПРБЛК</option><option value="angio" ${blockFilter==='angio'?'selected':''}>АНГБЛК</option></select><i aria-hidden="true"></i></span></label>`;
+  return includeBlock?`<div class="patient-filter-row">${department}${blocks}</div>`:department;
 }
 function todayView(active, completed) {
-  const visibleActive = active.filter(patient => patientMatchesDepartment(patient) && patientMatchesSearch(patient));
-  const visibleCompleted = completed.filter(patient => patientMatchesDepartment(patient) && patientMatchesSearch(patient));
+  const visibleActive = active.filter(patient => patientMatchesDepartment(patient) && patientMatchesBlock(patient) && patientMatchesSearch(patient));
+  const visibleCompleted = completed.filter(patient => patientMatchesDepartment(patient) && patientMatchesBlock(patient) && patientMatchesSearch(patient));
   const ops = [...visibleActive, ...visibleCompleted].filter(hasTodayOperation).length;
   const inOr = visibleActive.filter(p => p.steps.some(s => ['in_or','pickup'].includes(s.state))).length;
   const engagedPatients = visibleActive.filter(p => p.steps.some(s => ['in_progress','in_or','pickup'].includes(s.state)));
@@ -1066,7 +1144,7 @@ function todayView(active, completed) {
   return `
     ${pendingIncoming().length?`<button class="inbox-banner" data-view="inbox"><span><b>${pendingIncoming().length}</b><i>Новые поручения</i></span><strong>Посмотреть →</strong></button>`:''}
     ${activeSearchView()}
-    ${departmentFiltersView()}
+    ${departmentFiltersView(true)}
     ${engagedPatients.length ? `
       <div class="section-head workstream-head status-section working"><h2>В работе</h2><span>${engaged} вне палаты</span></div>
       <div class="patient-list">${engagedPatients.map(compactPatientCard).join('')}</div>
@@ -1110,17 +1188,23 @@ function inboxView() {
 }
 
 function directionsView() {
-  const dirs = [...getDirections(), {id:'other',label:'Другое'}];
-  const quickIndex=dirs.map(item=>{
-    const count=state.patients.filter(patient=>patientMatchesDepartment(patient)&&patientMatchesSearch(patient)&&directionPatientStatus(patient,item.id)).length;
-    return `<button data-scroll-direction="${esc(item.id)}"><span>${esc(item.label)}</span><b>${count}</b></button>`;
-  }).join('');
+  const dirs = [{id:'all',label:'Все'}, ...getDirections(), {id:'other',label:'Другое'}];
+  const patients = state.patients.filter(patient=>patientMatchesDepartment(patient)&&patientMatchesBlock(patient)&&patientMatchesSearch(patient)&&patient.steps.some(step=>stepMatchesDirection(step,direction)));
+  const statusFor=patient=>direction==='all'?(patient.steps.some(step=>['in_progress','in_or','pickup'].includes(step.state))?'working':patient.steps.some(step=>!isTerminalStep(step))?'waiting':'handled'):directionPatientStatus(patient,direction);
+  const working=sortPatients(patients.filter(patient=>statusFor(patient)==='working'));
+  const waiting=sortPatients(patients.filter(patient=>statusFor(patient)==='waiting'));
+  const handled=sortPatients(patients.filter(patient=>statusFor(patient)==='handled'));
+  const countFor=id=>state.patients.filter(patient=>patientMatchesDepartment(patient)&&patientMatchesBlock(patient)&&patientMatchesSearch(patient)&&patient.steps.some(step=>stepMatchesDirection(step,id))).length;
   return `
     ${activeSearchView()}
-    <div class="section-head directions-head"><div><h2>Реестр направлений</h2><span>раскрой нужную группу</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
-    ${departmentFiltersView()}
-    <div id="directions-index" class="directions-quick-index" aria-label="Быстрый переход по направлениям"><button class="directions-home" data-action="directions-home">Начало</button>${quickIndex}</div>
-    <div class="direction-registry">${dirs.map(directionRegistryGroup).join('')}</div>
+    <div class="section-head directions-head"><div><h2>По направлениям</h2><span>выбери нужное направление</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
+    <div class="direction-filters" role="tablist" aria-label="Направления">${dirs.map(item=>`<button class="chip ${direction===item.id?'active':''}" data-direction="${esc(item.id)}" role="tab" aria-selected="${direction===item.id}"><span>${esc(item.label)}</span><b>${countFor(item.id)}</b></button>`).join('')}</div>
+    ${departmentFiltersView(true)}
+    ${working.length?`<div class="section-head status-section working"><h2>В работе</h2><span>${working.length}</span></div><div class="patient-list">${working.map(compactPatientCard).join('')}</div>`:''}
+    <div class="section-head status-section waiting"><h2>Ожидают</h2><span>${waiting.length}</span></div>
+    <div class="patient-list">${waiting.map(compactPatientCard).join('')||'<div class="empty compact-empty">Никого не ожидает</div>'}</div>
+    <div class="section-head status-section handled"><h2>Обработано сегодня</h2><span>${handled.length}</span></div>
+    <div class="patient-list">${handled.map(compactPatientCard).join('')||'<div class="empty compact-empty">Пока ничего</div>'}</div>
   `;
 }
 
@@ -1253,7 +1337,8 @@ function teamSettingsView() {
   if(!activeTeamShift()) return `<section class="settings-card team-settings-card"><div class="settings-card-head"><h2>Общая смена</h2><span>не подключена</span></div><p>Создай смену для своего отделения или введи код от владельца. Личные данные останутся отдельной копией.</p><div class="settings-actions"><button class="primary-btn" data-action="team-create-open">Создать смену</button><button class="secondary-btn" data-action="team-join-open">Ввести код</button></div></section>`;
   const actor=currentActor();
   const members=team.members.map(member=>`<div class="team-member"><div><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}${member.user_id===actor.id?' · это вы':''}</span></div>${canManageTeam()&&member.user_id!==actor.id?`<button class="secondary-btn" data-action="team-member-open" data-member="${esc(member.user_id)}">Права</button>`:''}</div>`).join('');
-  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))}</span></div><p>Очередь синхронизируется между участниками. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
+  const notificationButton=notificationPermission()==='granted'?'<button class="secondary-btn" disabled>Уведомления включены</button>':notificationPermission()==='unsupported'?'':'<button class="secondary-btn" data-action="notifications-enable">Включить уведомления</button>';
+  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))}</span></div><p>Очередь обновляется между участниками в реальном времени. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}${notificationButton}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
 }
 
 function settingsView() {
@@ -1324,7 +1409,7 @@ function compactPatientCard(p) {
   const compactTitle = step?.state === 'in_progress' ? step.title : step ? stepTitle(step) : 'Маршрут завершён';
   const doctor = patientDoctor(p);
   const missing = patientMissingFields(p);
-  return `<article class="patient-card compact-card ${hasTodayOperation(p)?'operation-today':''} ${urgent?'urgent':''}">
+  return `<article class="patient-card compact-card ${hasTodayOperation(p)?'operation-today':''} ${urgent?'urgent':''}" data-card-details="${esc(p.id)}" tabindex="0" aria-label="Открыть подробности: ${esc(p.surname)}">
     <div class="compact-head">
       <div class="patient-name">${esc(p.surname)} <span class="patient-room">· п.${esc(p.room || '?')}</span></div>
       <div class="badges">${p.departmentId?`<span class="badge department ${isOwnDepartment(p)?'own':''}" title="${esc(departmentLabel(p.departmentId))}">${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · НАШЕ':''}</span>`:''}${urgent?'<span class="badge urgent">СРОЧНО</span>':''}${p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:hasTodayOperation(p)?'<span class="badge operation">ОПЕРАЦИЯ</span>':''}${p.pinned?'<span class="badge warn">СЛЕДУЮЩИЙ</span>':''}</div>
@@ -1682,6 +1767,7 @@ function bind() {
     group.scrollIntoView({behavior:'smooth',block:'start'});
   });
   document.querySelectorAll('select[data-department-filter]').forEach(el=>el.onchange=()=>{departmentFilter=el.value; render(true);});
+  document.querySelectorAll('select[data-block-filter]').forEach(el=>el.onchange=()=>{blockFilter=['op','angio'].includes(el.value)?el.value:'all'; render(true);});
   document.querySelectorAll('[data-contact-department]').forEach(el=>el.onclick=()=>{contactDepartmentFilter=el.dataset.contactDepartment; render(true);});
   document.querySelectorAll('[data-contact-role]').forEach(el=>el.onclick=()=>{contactRoleFilter=el.dataset.contactRole; render(true);});
   const patientSearchInput=document.getElementById('patient-search');
@@ -1702,6 +1788,11 @@ function bind() {
   document.querySelectorAll('[data-department-name]').forEach(el=>el.oninput=()=>{ const item=modal?.departments?.find(item=>item.id===el.dataset.departmentName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-department-own]').forEach(el=>el.onchange=()=>{ if(modal?.type==='departments' && el.checked) modal.ownDepartmentId=el.dataset.departmentOwn; });
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
+  document.querySelectorAll('[data-card-details]').forEach(card=>{
+    const open=event=>{if(event.target.closest('button,a,input,select,textarea,label,summary'))return;modal={type:'details',patient:card.dataset.cardDetails};render(true);};
+    card.onclick=open;
+    card.onkeydown=event=>{if(['Enter',' '].includes(event.key)&&!event.target.closest('button,a,input,select,textarea')){event.preventDefault();open(event);}};
+  });
   const authForm=document.getElementById('cloud-auth-form');
   if(authForm) authForm.onsubmit=(e)=>{
     e.preventDefault();
@@ -1820,6 +1911,7 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 }
 
 async function handleAction(action, el, e) {
+  e?.stopPropagation?.();
   const writeActions=new Set(['submit-quick','submit-patient','contact-save','contact-delete','department-save','direction-save','route-save','save-patient','confirm-import-backup','confirm-reset','confirm-new-shift']);
   const operateActions=new Set(['accept-incoming','reject-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm']);
   if(activeTeamShift()&&writeActions.has(action)&&!canEditTeam()) { cloud.message='У этой роли нет права изменять смену'; return render(true); }
@@ -1827,6 +1919,13 @@ async function handleAction(action, el, e) {
   if (action==='undo-last') {
     if(!undoEntry)return;
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
+  }
+  if (action==='team-notice-open') { teamNotice=null; await syncCloudState(); return render(true); }
+  if (action==='notifications-enable') {
+    if(!('Notification' in globalThis)){cloud.message='Уведомления не поддерживаются этим браузером';return render(true);}
+    const permission=await Notification.requestPermission();
+    cloud.message=permission==='granted'?'Уведомления общей смены включены':'Браузер не разрешил уведомления';
+    return render(true);
   }
   if (action==='add') { modal={type:'quick',target:workMode()==='team'||view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
@@ -2276,19 +2375,26 @@ globalThis.__MEDFLOW_TEST__={
   getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
-  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice
+  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice,
+  operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
-setInterval(()=>{ if(!modal && cloud.session && navigator.onLine && !cloud.syncing) syncCloudState(); },20000);
+setInterval(()=>{ if(!activeTeamShift()&&!modal&&cloud.session&&navigator.onLine&&!cloud.syncing) syncCloudState(); },20000);
+setInterval(()=>{ if(activeTeamShift()&&!modal&&navigator.onLine&&!cloud.syncing) syncSharedShift(); },TEAM_POLL_INTERVAL);
 window.addEventListener('online',()=>{
   cloud.status=cloud.session?'pending':'local';
   cloud.message=cloud.session?'Сеть появилась, синхронизируем…':'';
+  if(activeTeamShift())connectTeamRealtime();
   if(cloud.session) syncCloudState(); else if(!modal&&(view==='settings'||view==='today')) render(true);
 });
 window.addEventListener('offline',()=>{
+  disconnectTeamRealtime();
   cloud.status='offline';
   cloud.message=cloud.session?'Изменения сохраняются на устройстве':'';
   if(!modal&&(view==='settings'||view==='today')) render(true);
+});
+document.addEventListener?.('visibilitychange',()=>{
+  if(!document.hidden&&activeTeamShift()&&navigator.onLine){connectTeamRealtime();syncSharedShift();}
 });
 render();
 handleAuthRedirect().then(async()=>{ if(cloud.session && modal?.type!=='password-update') { await discoverTeamShift(); setTimeout(()=>syncCloudState(),0); } }).catch(error=>{

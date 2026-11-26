@@ -186,7 +186,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(api.departmentOptions('department-own').includes('наше'));
   const departmentFilterView=api.departmentFiltersView();
   assert.ok(departmentFilterView.includes('<select data-department-filter'));
-  assert.ok(departmentFilterView.includes('value="department-own" selected'));
+  assert.ok(departmentFilterView.includes('value="all" selected'));
 }
 
 {
@@ -537,12 +537,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v42"));
+  assert.ok(sw.includes("medflow-shell-v43"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=42');
+  assert.equal(manifest.start_url,'./?pwa=43');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -611,7 +611,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-action="search-toggle"'));
   assert.ok(source.includes('data-action="search-close"'));
   assert.ok(source.includes('liveFilterSearch(input,kind)'));
-  assert.ok(source.includes('data-action="directions-home"'));
+  assert.ok(source.includes('class="direction-filters"'));
+  assert.ok(source.includes('data-card-details'));
+  assert.ok(source.includes('data-block-filter'));
+  assert.ok(source.includes('connectTeamRealtime()'));
+  assert.ok(source.includes("Notification.permission==='granted'"));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
@@ -658,8 +662,21 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(api.workModeSelectorView().includes('data-mode="team"'));
   assert.ok(api.entryTargetChoice('queue','solo').includes('value="queue" checked'));
   assert.ok(api.entryTargetChoice('queue','team').includes('type="hidden" name="entry-target" value="inbox"'));
-  assert.ok(source.includes('data-scroll-direction'));
+  assert.ok(source.includes('data-direction="${esc(item.id)}"'));
   assert.ok(source.includes("workMode()==='team'||fd.get('entry-target')==='inbox'"));
+}
+
+{
+  const op={surname:'Б',block:'op',priority:'operation',steps:[step('Операция','active','operation')]};
+  const angio={surname:'А',block:'angio',priority:'operation',steps:[step('Операция','active','operation')]};
+  const ordinary={surname:'В',block:'',priority:'normal',steps:[step('ЭКГ','active','ecg')]};
+  const sorted=api.sortPatients([angio,ordinary,op],'priority');
+  assert.equal(sorted[0],op);
+  assert.equal(sorted[1],angio);
+  assert.equal(api.patientMatchesBlock(op,'op'),true);
+  assert.equal(api.patientMatchesBlock(angio,'op'),false);
+  assert.equal(api.safeDisplayName('worker@example.com'),'');
+  assert.equal(api.safeDisplayName('Михаил'),'Михаил');
 }
 
 {
@@ -680,6 +697,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(migration.includes('gen_random_uuid'));
   assert.ok(!migration.includes('encode(gen_random_bytes'));
   assert.ok(migration.includes('medflow_create_shift_invite'));
+}
+
+{
+  const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','006_enable_shared_shift_realtime.sql'),'utf8');
+  assert.ok(migration.includes('publication supabase_realtime'));
+  assert.ok(migration.includes('public.medflow_shifts'));
 }
 
 {
