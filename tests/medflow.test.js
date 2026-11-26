@@ -219,9 +219,17 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   assert.equal(api.normalizeTimeInput('8:30'), '08:30');
+  assert.equal(api.normalizeTimeInput('0800'), '08:00');
+  assert.equal(api.normalizeTimeInput('1554'), '15:54');
+  assert.equal(api.normalizeTimeInput('803'), '08:03');
+  assert.equal(api.normalizeTimeInput('11:03'), '11:03');
   assert.equal(api.normalizeTimeInput('18.05'), '18:05');
+  assert.equal(api.normalizeTimeInput('2400'), '');
   assert.equal(api.normalizeTimeInput('24:00'), '');
   assert.equal(api.normalizeTimeInput('примерно утром'), '');
+  assert.equal(api.formatTimeTyping('0800'), '08:00');
+  assert.equal(api.formatTimeTyping('1554'), '15:54');
+  assert.equal(api.formatTimeTyping('11:03'), '11:03');
   assert.equal(api.stepTimeLabel({time:'09:10'}), '09:10');
   assert.equal(api.stepTimeLabel({time:'',timeFlexible:true}), 'Без времени');
   const flexible={surname:'Иванов',room:'1',transport:'Кресло',steps:[{...step('УЗИ','active','ultrasound'),timeFlexible:true}]};
@@ -537,12 +545,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v44"));
+  assert.ok(sw.includes("medflow-shell-v45"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=44');
+  assert.equal(manifest.start_url,'./?pwa=45');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -603,7 +611,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('name="entry-target"'));
   assert.ok(source.includes('},20000);'));
   assert.ok(source.includes('hasOpenWorkForm()'));
-  assert.ok(source.includes('type="time"'));
+  assert.ok(source.includes('inputmode="numeric"'));
+  assert.ok(!source.includes('step="300"'));
   assert.ok(source.includes('data-time-now'));
   assert.ok(source.includes('deferSyncForOpenForm()'));
   assert.ok(source.includes('captureModalDraft()'));
@@ -611,7 +620,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-action="search-toggle"'));
   assert.ok(source.includes('data-action="search-close"'));
   assert.ok(source.includes('liveFilterSearch(input,kind)'));
-  assert.ok(source.includes('class="direction-filters"'));
+  assert.ok(source.includes('class="direction-filters filters"'));
   assert.ok(source.includes('data-card-details'));
   assert.ok(source.includes('data-block-filter'));
   assert.ok(source.includes('connectTeamRealtime()'));
@@ -619,6 +628,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
+  assert.ok(source.includes("const UNDO_TIMEOUT = 5000"));
+  assert.ok(source.includes('confirm-new-shift-final'));
+  assert.ok(source.includes('confirm-reset-final'));
 }
 
 {
@@ -638,6 +650,20 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(merged.assignedTo,'worker-b');
   assert.equal(merged.assignedToName,'Михаил');
   assert.equal(merged.events.length,1);
+}
+
+{
+  const local={id:'same',surname:'Версия напарника',updatedAt:500,updatedBy:'worker',steps:[],events:[]};
+  const remote={id:'same',surname:'Версия создателя',updatedAt:500,updatedBy:'owner',steps:[],events:[]};
+  const merged=api.mergePatient(local,remote,{ownerId:'owner'});
+  assert.equal(merged.surname,'Версия создателя');
+}
+
+{
+  const local={patients:[{id:'same',updatedAt:500,updatedBy:'worker'}],incoming:[]};
+  const remote={patients:[{id:'same',updatedAt:600,updatedBy:'owner'}],incoming:[]};
+  assert.deepEqual([...api.concurrentPatientChanges(local,remote,400)],['same']);
+  assert.equal(api.concurrentPatientChanges(local,remote,550).length,0);
 }
 
 {

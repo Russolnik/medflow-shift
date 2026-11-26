@@ -42,7 +42,7 @@ const SORT_MODES = ['priority', 'department', 'time-asc', 'time-desc'];
 const ADD_BUTTON_POSITIONS = ['floating', 'inline'];
 const DOCUMENT_STATUSES = ['taken', 'not_required'];
 const DEFAULT_WAIT_THRESHOLDS = { warningMinutes:60, criticalMinutes:120 };
-const UNDO_TIMEOUT = 8000;
+const UNDO_TIMEOUT = 5000;
 const CARE_FLAGS = [
   {id:'patient_attention',icon:'⚠',label:'Внимание к пациенту',hint:'Нужна повышенная внимательность или помощь второго сотрудника'},
   {id:'extra_protection',icon:'☣',label:'Доп. меры защиты',hint:'Только по указанию медработника, без записи диагноза'}
@@ -141,6 +141,7 @@ function storeTeamSession(next={}) {
 function activeTeamShift() { return Boolean(team.shiftId&&cloud.session?.user?.id); }
 function teamRole() { return activeTeamShift()?team.role:''; }
 function canManageTeam() { return teamRole()==='owner'; }
+function teamOwnerId() { return team.members.find(member=>member.role==='owner')?.user_id || ''; }
 function canOperateTeam() { return !activeTeamShift()||['owner','orderly'].includes(teamRole()); }
 function canEditTeam() { return !activeTeamShift()||['owner','orderly','nurse'].includes(teamRole()); }
 function currentActor() {
@@ -368,12 +369,16 @@ async function syncSharedShift({preferRemote=false}={}) {
       cloud.lastSyncedAt=Date.now(); cloud.status='synced'; cloud.message='Общая смена обновлена';
     } else if(localDirty) {
       let expected=remote.updated_at;
-      if(remoteChanged||!team.remoteVersion) state=mergeStates(state,remote.payload);
+      if(remoteChanged||!team.remoteVersion) {
+        const concurrent=concurrentPatientChanges(state,remote.payload,team.lastLocalAt||0);
+        state=mergeStates(state,remote.payload,{ownerId:teamOwnerId()});
+        if(concurrent.length) showTeamNotice(`Одновременные изменения объединены: ${concurrent.length} карточк${concurrent.length===1?'а':'и'}. Проверь детали`);
+      }
       for(let attempt=0;attempt<3;attempt+=1) {
         const result=await pushSharedShift(expected);
         if(result?.ok) break;
         if(!result?.payload) throw new Error('Не удалось объединить общую смену');
-        state=mergeStates(state,result.payload); expected=result.updated_at;
+        state=mergeStates(state,result.payload,{ownerId:teamOwnerId()}); expected=result.updated_at;
         localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); localUpdatedAt=Date.now(); localStorage.setItem(SYNC_META_KEY,String(localUpdatedAt));
         if(attempt===2) throw new Error('Смена быстро меняется на другом устройстве. Повторим автоматически');
       }
@@ -519,7 +524,7 @@ function mergeStep(localStep,remoteStep) {
   const preferred=remoteTime>localTime || (remoteTime===localTime && stepStateRank(remoteStep.state)>stepStateRank(localStep.state)) ? remoteStep : localStep;
   return {...clone(localStep),...clone(remoteStep),...clone(preferred),documents:{...(localStep.documents||{}),...(remoteStep.documents||{}),...(preferred.documents||{})}};
 }
-function mergePatient(localPatient,remotePatient) {
+function mergePatient(localPatient,remotePatient,{ownerId=''}={}) {
   if(!localPatient) return clone(remotePatient);
   if(!remotePatient) return clone(localPatient);
   const localSteps=new Map((localPatient.steps||[]).map(step=>[step.id,step]));
@@ -527,10 +532,15 @@ function mergePatient(localPatient,remotePatient) {
   const stepIds=[...new Set([...localSteps.keys(),...remoteSteps.keys()])];
   const events=[...(localPatient.events||[]),...(remotePatient.events||[])].filter((event,index,all)=>index===all.findIndex(item=>event.id&&item.id?item.id===event.id:item.at===event.at&&item.text===event.text)).sort((a,b)=>(a.at||0)-(b.at||0));
   const patientTime=patient=>Math.max(0,Number(patient.updatedAt)||0,Number(patient.inboxCreatedAt)||0,Number(patient.inboxResolvedAt)||0,...(patient.steps||[]).map(stepTouchedAt),...(patient.events||[]).map(event=>Number(event.at)||0));
-  const preferred=patientTime(remotePatient)>patientTime(localPatient)?remotePatient:localPatient;
+  const localTime=patientTime(localPatient), remoteTime=patientTime(remotePatient);
+  let preferred=remoteTime>localTime?remotePatient:localPatient;
+  if(localTime===remoteTime&&ownerId) {
+    if(remotePatient.updatedBy===ownerId&&localPatient.updatedBy!==ownerId) preferred=remotePatient;
+    if(localPatient.updatedBy===ownerId&&remotePatient.updatedBy!==ownerId) preferred=localPatient;
+  }
   return {...clone(localPatient),...clone(remotePatient),...clone(preferred),steps:stepIds.map(id=>mergeStep(localSteps.get(id),remoteSteps.get(id))),events};
 }
-function mergeStates(localState,remoteState) {
+function mergeStates(localState,remoteState,{ownerId=''}={}) {
   const local=normalizeState(clone(localState)), remote=normalizeState(clone(remoteState));
   const localPatients=new Map(local.patients.map(patient=>[patient.id,patient]));
   const remotePatients=new Map(remote.patients.map(patient=>[patient.id,patient]));
@@ -542,7 +552,16 @@ function mergeStates(localState,remoteState) {
   const directions=[...(local.directions||[]),...(remote.directions||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
   const departments=[...(local.departments||[]),...(remote.departments||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
   const contacts=[...(local.contacts||[]),...(remote.contacts||[])].filter((item,index,all)=>index===all.findIndex(entry=>entry.id===item.id));
-  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id))),incoming:incomingIds.map(id=>mergePatient(localIncoming.get(id),remoteIncoming.get(id))),archive:archives,directions,departments,contacts});
+  return normalizeState({...remote,...local,patients:patientIds.map(id=>mergePatient(localPatients.get(id),remotePatients.get(id),{ownerId})),incoming:incomingIds.map(id=>mergePatient(localIncoming.get(id),remoteIncoming.get(id),{ownerId})),archive:archives,directions,departments,contacts});
+}
+function concurrentPatientChanges(localState,remoteState,baselineAt=0) {
+  const remotePatients=new Map([...(remoteState?.patients||[]),...(remoteState?.incoming||[])].map(patient=>[patient.id,patient]));
+  return [...(localState?.patients||[]),...(localState?.incoming||[])].filter(localPatient=>{
+    const remotePatient=remotePatients.get(localPatient.id);
+    if(!remotePatient)return false;
+    const localAt=Number(localPatient.updatedAt)||0, remoteAt=Number(remotePatient.updatedAt)||0;
+    return localAt>baselineAt&&remoteAt>baselineAt&&localPatient.updatedBy&&remotePatient.updatedBy&&localPatient.updatedBy!==remotePatient.updatedBy;
+  }).map(patient=>patient.id);
 }
 function backupEnvelope() {
   return {format:'medflow-backup',version:1,exportedAt:new Date().toISOString(),state:clone(state)};
@@ -721,11 +740,37 @@ function patientMissingFields(patient) {
 }
 function stepTimeLabel(step) { return step?.time || (step?.timeFlexible ? 'Без времени' : ''); }
 function normalizeTimeInput(value='') {
-  const compact=String(value).trim().replace(/[.\-\s]/g,':');
+  let compact=String(value).trim().replace(/[.\-\s]/g,':');
+  if(/^\d{3,4}$/.test(compact)) {
+    const digits=compact.padStart(4,'0');
+    compact=`${digits.slice(0,2)}:${digits.slice(2)}`;
+  }
   const match=/^(\d{1,2}):(\d{2})$/.exec(compact);
   if(!match)return '';
   const hour=Number(match[1]),minute=Number(match[2]);
   return hour<24&&minute<60?`${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`:'';
+}
+function formatTimeTyping(value='') {
+  const raw=String(value).replace(/[.\-\s]/g,':').replace(/[^\d:]/g,'').slice(0,5);
+  if(/^\d{4}$/.test(raw)) return `${raw.slice(0,2)}:${raw.slice(2)}`;
+  return raw;
+}
+function validateTimeInput(input,normalize=false) {
+  if(!input)return true;
+  const formatted=formatTimeTyping(input.value);
+  const normalized=normalizeTimeInput(formatted);
+  if(normalize&&normalized)input.value=normalized;
+  else if(formatted!==input.value)input.value=formatted;
+  const valid=!input.value||Boolean(normalized);
+  input.setCustomValidity(valid?'':'Введите время четырьмя цифрами, например 0800, или как 08:00');
+  return valid;
+}
+function bindTimeInput(input,onValue) {
+  if(!input)return;
+  const update=normalize=>{validateTimeInput(input,normalize);if(onValue)onValue(input.value);};
+  input.oninput=()=>update(false);
+  input.onblur=()=>update(true);
+  update(false);
 }
 function readTimeChoice(fd,name='time') {
   if(fd.get(`${name}-none`)==='on')return {time:'',timeFlexible:true};
@@ -734,7 +779,7 @@ function readTimeChoice(fd,name='time') {
 }
 function timeChoice(name='time',step={},label='Время') {
   const flexible=Boolean(step?.timeFlexible&&!step?.time);
-  return `<div class="field time-choice"><label>${esc(label)}</label><div class="time-choice-row"><input type="time" step="300" name="${esc(name)}" value="${esc(step?.time||'')}" ${flexible?'disabled':''} data-time-input="${esc(name)}" /><div class="time-choice-actions"><button type="button" class="time-now" data-time-now="${esc(name)}">Сейчас</button><label class="no-time"><input type="checkbox" name="${esc(name)}-none" data-time-none="${esc(name)}" ${flexible?'checked':''}/><span>Без времени</span></label></div></div></div>`;
+  return `<div class="field time-choice"><label>${esc(label)}</label><div class="time-choice-row"><input type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="08:00" name="${esc(name)}" value="${esc(step?.time||'')}" ${flexible?'disabled':''} data-time-input="${esc(name)}" /><div class="time-choice-actions"><button type="button" class="time-now" data-time-now="${esc(name)}">Сейчас</button><label class="no-time"><input type="checkbox" name="${esc(name)}-none" data-time-none="${esc(name)}" ${flexible?'checked':''}/><span>Без времени</span></label></div></div></div>`;
 }
 function entryTargetChoice(selected='queue', mode=workMode()) {
   if(mode==='team') return `<div class="entry-target team-entry-target full"><input type="hidden" name="entry-target" value="inbox" /><span><b>Добавится в «Новое»</b><small>В командной смене поручение сначала подтверждается, чтобы два сотрудника не взяли его одновременно.</small></span></div>`;
@@ -1198,7 +1243,7 @@ function directionsView() {
   return `
     ${activeSearchView()}
     <div class="section-head directions-head"><div><h2>По направлениям</h2><span>выбери нужное направление</span></div><button class="secondary-btn manage-directions-btn" data-action="manage-directions">Настроить</button></div>
-    <div class="direction-filters" role="tablist" aria-label="Направления">${dirs.map(item=>`<button class="chip ${direction===item.id?'active':''}" data-direction="${esc(item.id)}" role="tab" aria-selected="${direction===item.id}"><span>${esc(item.label)}</span><b>${countFor(item.id)}</b></button>`).join('')}</div>
+    <div class="direction-filters filters" role="tablist" aria-label="Направления">${dirs.map(item=>`<button class="chip ${direction===item.id?'active':''}" data-direction="${esc(item.id)}" role="tab" aria-selected="${direction===item.id}"><span>${esc(item.label)}</span><b>${countFor(item.id)}</b></button>`).join('')}</div>
     ${departmentFiltersView(true)}
     ${working.length?`<div class="section-head status-section working"><h2>В работе</h2><span>${working.length}</span></div><div class="patient-list">${working.map(compactPatientCard).join('')}</div>`:''}
     <div class="section-head status-section waiting"><h2>Ожидают</h2><span>${waiting.length}</span></div>
@@ -1418,7 +1463,6 @@ function compactPatientCard(p) {
       <div class="compact-controls">
         ${operationTimersView(orStep)}
         ${step && canOperateTeam() ? `<button class="primary-btn" data-action="advance" data-patient="${p.id}">${actionLabel(step)}</button>${canContinueNow(p)?`<button class="secondary-btn continue-btn" data-action="advance-next" data-patient="${p.id}">Дальше: ${esc(next.title)}</button>`:''}` : !step && lastTerminal && canOperateTeam() ? `<button class="secondary-btn restore-btn" data-action="restore-step" data-patient="${p.id}" data-step="${lastTerminal.id}" data-source="current">Вернуть в очередь</button>` : ''}
-        <button class="secondary-btn compact-edit" data-action="edit-patient" data-patient="${p.id}" aria-label="Редактировать данные пациента">✎</button>
       </div>
     </div>
   </article>`;
@@ -1662,8 +1706,8 @@ function modalView() {
     const p = state.patients.find(x => x.id === modal.patient);
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <h2>Цепочка · ${esc(p?.surname || '')}</h2><p class="modal-sub">Направление текущего этапа можно менять до начала выполнения</p>
-      <div class="route-editor">${modal.steps.map((s,i)=>{const editable=canEditRouteStep(s);const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';const hint=!editable?'Выполняемый или завершённый этап защищён':!movable?'Текущий этап можно изменить, но нельзя переставить':'Можно изменить, переставить или удалить';return `<div class="route-editor-item ${editable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><select class="route-type-select" data-route-type="${i}" aria-label="Направление этапа ${i+1}" ${editable?'':'disabled'}>${directionOptions(s.type,true)}</select><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" ${editable?'':'disabled'} /><div class="route-time-control"><input class="route-time-input" type="time" step="300" data-route-time="${i}" value="${esc(s.time || '')}" aria-label="Время этапа ${i+1}" ${!editable||s.timeFlexible?'disabled':''} /><label><input type="checkbox" data-route-time-none="${i}" ${s.timeFlexible?'checked':''} ${editable?'':'disabled'} />без времени</label></div><small>${hint}</small></div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
-      <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><div class="route-time-control"><input id="route-time" type="time" step="300" aria-label="Время нового этапа" /><label><input id="route-time-none" type="checkbox" />без времени</label></div><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
+      <div class="route-editor">${modal.steps.map((s,i)=>{const editable=canEditRouteStep(s);const movable=s.state==='waiting';const canUp=movable&&i>0&&modal.steps[i-1].state==='waiting';const canDown=movable&&i<modal.steps.length-1&&modal.steps[i+1].state==='waiting';const hint=!editable?'Выполняемый или завершённый этап защищён':!movable?'Текущий этап можно изменить, но нельзя переставить':'Можно изменить, переставить или удалить';return `<div class="route-editor-item ${editable?'':'locked'}"><span class="route-index">${i+1}</span><div class="route-item-copy"><select class="route-type-select" data-route-type="${i}" aria-label="Направление этапа ${i+1}" ${editable?'':'disabled'}>${directionOptions(s.type,true)}</select><input class="route-title-input" data-route-title="${i}" value="${esc(s.title)}" aria-label="Название этапа ${i+1}" ${editable?'':'disabled'} /><div class="route-time-control"><input class="route-time-input" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="08:00" data-route-time="${i}" value="${esc(s.time || '')}" aria-label="Время этапа ${i+1}" ${!editable||s.timeFlexible?'disabled':''} /><label><input type="checkbox" data-route-time-none="${i}" ${s.timeFlexible?'checked':''} ${editable?'':'disabled'} />без времени</label></div><small>${hint}</small></div><div class="route-tools"><button data-action="route-up" data-index="${i}" ${canUp?'':'disabled'}>↑</button><button data-action="route-down" data-index="${i}" ${canDown?'':'disabled'}>↓</button><button data-action="route-delete" data-index="${i}" ${movable?'':'disabled'}>×</button></div></div>`;}).join('')}</div>
+      <div class="route-add"><select id="route-type">${directionOptions('', true)}</select><input id="route-custom" placeholder="Своё название" /><div class="route-time-control"><input id="route-time" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="08:00" aria-label="Время нового этапа" /><label><input id="route-time-none" type="checkbox" />без времени</label></div><button class="secondary-btn" data-action="route-add">＋ Добавить</button></div>
       <div class="modal-actions"><button class="secondary-btn" data-action="details" data-patient="${modal.patient}">Назад</button><button class="primary-btn" data-action="route-save" data-patient="${modal.patient}">Сохранить цепочку</button></div>
     </section></div>`;
   }
@@ -1728,10 +1772,12 @@ function modalView() {
     </section></div>`;
   }
   if (modal.type === 'confirm-new-shift') {
-    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>Начать новую смену?</h2><p class="modal-sub">Текущие карточки уйдут в «Прошлые смены», а главный экран станет пустым.</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="primary-btn" data-action="confirm-new-shift">Начать</button></div></section></div>`;
+    const final=modal.stage===2;
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>${final?'Точно завершить текущую смену?':'Начать новую смену?'}</h2><p class="modal-sub">${final?'Это второе подтверждение. Все текущие карточки уйдут в историю общей смены.':'Текущие карточки уйдут в «Прошлые смены», а главный экран станет пустым.'}</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="${final?'danger-btn':'primary-btn'}" data-action="${final?'confirm-new-shift-final':'confirm-new-shift'}">${final?'Да, начать новую':'Продолжить'}</button></div></section></div>`;
   }
   if (modal.type === 'confirm-reset') {
-    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>Вернуть демо-данные?</h2><p class="modal-sub">Текущая и прошлые смены будут заменены исходным учебным примером.</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="danger-btn" data-action="confirm-reset">Вернуть демо</button></div></section></div>`;
+    const final=modal.stage===2;
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>${final?'Последнее подтверждение':'Вернуть демо-данные?'}</h2><p class="modal-sub">${final?'Текущая и прошлые смены будут безвозвратно заменены учебным примером.':'Это очистит рабочие данные. На следующем шаге потребуется подтвердить действие ещё раз.'}</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button><button class="danger-btn" data-action="${final?'confirm-reset-final':'confirm-reset'}">${final?'Да, заменить данные':'Продолжить'}</button></div></section></div>`;
   }
   if (modal.type === 'confirm-transition') {
     const p=state.patients.find(x=>x.id===modal.patient), s=p&&currentStep(p);
@@ -1775,14 +1821,16 @@ function bind() {
   if(contactSearchInput) bindSearchInput(contactSearchInput,'contact');
   document.querySelectorAll('[data-sort-mode]').forEach(el=>el.onchange=()=>{ state.settings.sortMode=SORT_MODES.includes(el.value)?el.value:'priority'; save(); render(true); });
   document.querySelectorAll('[data-route-title]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTitle)]) modal.steps[Number(el.dataset.routeTitle)].title=el.value; });
-  document.querySelectorAll('[data-route-time]').forEach(el=>el.oninput=()=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=el.value; });
-  document.querySelectorAll('[data-route-time-none]').forEach(el=>el.onchange=()=>{const index=Number(el.dataset.routeTimeNone),step=modal?.type==='route'?modal.steps[index]:null,input=document.querySelector(`[data-route-time="${index}"]`);if(step){step.timeFlexible=el.checked;if(el.checked)step.time='';}if(input){input.disabled=el.checked;input.value=el.checked?'':step?.time||'';}});
+  document.querySelectorAll('[data-route-time]').forEach(el=>bindTimeInput(el,value=>{ if(modal?.type==='route' && modal.steps[Number(el.dataset.routeTime)]) modal.steps[Number(el.dataset.routeTime)].time=value; }));
+  document.querySelectorAll('[data-route-time-none]').forEach(el=>el.onchange=()=>{const index=Number(el.dataset.routeTimeNone),step=modal?.type==='route'?modal.steps[index]:null,input=document.querySelector(`[data-route-time="${index}"]`);if(step){step.timeFlexible=el.checked;if(el.checked)step.time='';}if(input){input.disabled=el.checked;input.value=el.checked?'':step?.time||'';if(el.checked)input.setCustomValidity('');}});
   document.querySelectorAll('[data-route-type]').forEach(el=>el.onchange=()=>{ const index=Number(el.dataset.routeType),step=modal?.type==='route'?modal.steps[index]:null;if(changeRouteStepType(step,el.value)){const title=document.querySelector(`[data-route-title="${index}"]`);if(title)title.value=step.title;} });
-  document.querySelectorAll('[data-time-none]').forEach(el=>{const update=()=>{const input=document.querySelector(`[data-time-input="${el.dataset.timeNone}"]`);if(input){input.disabled=el.checked;if(el.checked)input.value='';}};el.onchange=update;update();});
-  document.querySelectorAll('[data-time-now]').forEach(el=>el.onclick=()=>{const name=el.dataset.timeNow,input=document.querySelector(`[data-time-input="${name}"]`),none=document.querySelector(`[data-time-none="${name}"]`);if(!input)return;if(none)none.checked=false;input.disabled=false;const now=new Date();input.value=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;});
+  document.querySelectorAll('[data-time-input]').forEach(el=>bindTimeInput(el));
+  document.querySelectorAll('[data-time-none]').forEach(el=>{const update=()=>{const input=document.querySelector(`[data-time-input="${el.dataset.timeNone}"]`);if(input){input.disabled=el.checked;if(el.checked){input.value='';input.setCustomValidity('');}}};el.onchange=update;update();});
+  document.querySelectorAll('[data-time-now]').forEach(el=>el.onclick=()=>{const name=el.dataset.timeNow,input=document.querySelector(`[data-time-input="${name}"]`),none=document.querySelector(`[data-time-none="${name}"]`);if(!input)return;if(none)none.checked=false;input.disabled=false;const now=new Date();input.value=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;input.setCustomValidity('');});
   document.querySelectorAll('#quick-form,#patient-form').forEach(form=>{const update=()=>refreshOperationField(form);form.querySelectorAll('[name="type"],[name="extra-direction"]').forEach(el=>el.onchange=update);update();});
   const routeTimeNone=document.getElementById('route-time-none');
-  if(routeTimeNone)routeTimeNone.onchange=()=>{const input=document.getElementById('route-time');if(input){input.disabled=routeTimeNone.checked;if(routeTimeNone.checked)input.value='';}};
+  const routeTimeInput=document.getElementById('route-time');if(routeTimeInput)bindTimeInput(routeTimeInput);
+  if(routeTimeNone)routeTimeNone.onchange=()=>{const input=document.getElementById('route-time');if(input){input.disabled=routeTimeNone.checked;if(routeTimeNone.checked){input.value='';input.setCustomValidity('');}}};
   document.querySelectorAll('[data-direction-name]').forEach(el=>el.oninput=()=>{ const item=modal?.directions?.find(item=>item.id===el.dataset.directionName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-department-name]').forEach(el=>el.oninput=()=>{ const item=modal?.departments?.find(item=>item.id===el.dataset.departmentName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-department-own]').forEach(el=>el.onchange=()=>{ if(modal?.type==='departments' && el.checked) modal.ownDepartmentId=el.dataset.departmentOwn; });
@@ -1911,10 +1959,12 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 
 async function handleAction(action, el, e) {
   e?.stopPropagation?.();
-  const writeActions=new Set(['submit-quick','submit-patient','contact-save','contact-delete','department-save','direction-save','route-save','save-patient','confirm-import-backup','confirm-reset','confirm-new-shift']);
+  const writeActions=new Set(['submit-quick','submit-patient','contact-save','contact-delete','department-save','direction-save','route-save','save-patient','confirm-import-backup','confirm-reset','confirm-reset-final','confirm-new-shift','confirm-new-shift-final']);
   const operateActions=new Set(['accept-incoming','reject-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm']);
+  const ownerOnlyActions=new Set(['confirm-reset','confirm-reset-final','confirm-new-shift','confirm-new-shift-final','confirm-import-backup']);
   if(activeTeamShift()&&writeActions.has(action)&&!canEditTeam()) { cloud.message='У этой роли нет права изменять смену'; return render(true); }
   if(activeTeamShift()&&operateActions.has(action)&&!canOperateTeam()) { cloud.message='Только санитар или владелец может менять ход выполнения'; return render(true); }
+  if(activeTeamShift()&&ownerOnlyActions.has(action)&&!canManageTeam()) { cloud.message='Очистить или заменить общую смену может только её создатель'; modal=null; return render(true); }
   if (action==='undo-last') {
     if(!undoEntry)return;
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
@@ -2191,11 +2241,15 @@ async function handleAction(action, el, e) {
     const type=document.getElementById('route-type').value;
     const custom=document.getElementById('route-custom').value.trim();
     const timeFlexible=Boolean(document.getElementById('route-time-none')?.checked);
-    const time=timeFlexible?'':normalizeTimeInput(document.getElementById('route-time').value);
+    const timeInput=document.getElementById('route-time');
+    if(!timeFlexible&&!validateTimeInput(timeInput,true)){timeInput.reportValidity();return;}
+    const time=timeFlexible?'':normalizeTimeInput(timeInput.value);
     modal.steps.push({id:uid(),type,title:custom||typeLabel(type),time,timeFlexible,state:'waiting'});
     return render(true);
   }
   if (action==='route-save') {
+    const invalidTime=[...document.querySelectorAll('[data-route-time]:not(:disabled)')].find(input=>!validateTimeInput(input,true));
+    if(invalidTime){invalidTime.reportValidity();return;}
     const p=state.patients.find(p=>p.id===el.dataset.patient);
     p.steps=modal.steps.map(step=>({...step,time:step.timeFlexible?'':normalizeTimeInput(step.time),timeFlexible:Boolean(step.timeFlexible)}));
     if(!p.steps.length) {
@@ -2354,14 +2408,18 @@ async function handleAction(action, el, e) {
   }
   if (action==='delete-patient') { modal={type:'confirm-delete',patient:el.dataset.patient}; return render(); }
   if (action==='confirm-delete-patient') { const p=state.patients.find(item=>item.id===el.dataset.patient);armUndo(`Карточка ${p?.surname||'пациента'} удалена`);state.patients=state.patients.filter(p=>p.id!==el.dataset.patient); modal=null; save(); return render(); }
-  if (action==='new-shift') { modal={type:'confirm-new-shift'}; return render(); }
+  if (action==='new-shift') { if(activeTeamShift()&&!canManageTeam()){cloud.message='Новую общую смену может начать только её создатель';return render(true);} modal={type:'confirm-new-shift',stage:1}; return render(); }
   if (action==='confirm-new-shift') {
+    modal={type:'confirm-new-shift',stage:2}; return render();
+  }
+  if (action==='confirm-new-shift-final') {
     state.archive ||= [];
     if(state.patients.length) state.archive.push({id:uid(),startedAt:state.shiftStartedAt,closedAt:Date.now(),patients:clone(state.patients)});
     state.patients=[]; state.shiftStartedAt=Date.now(); modal=null; view='today'; save(); return render();
   }
-  if (action==='reset') { modal={type:'confirm-reset'}; return render(); }
-  if (action==='confirm-reset') { localStorage.removeItem(STORAGE_KEY); state=normalizeState(clone(seed)); state.shiftStartedAt=Date.now(); modal=null; view='today'; save(); return render(); }
+  if (action==='reset') { if(activeTeamShift()&&!canManageTeam()){cloud.message='Сброс общей смены доступен только её создателю';return render(true);} modal={type:'confirm-reset',stage:1}; return render(); }
+  if (action==='confirm-reset') { modal={type:'confirm-reset',stage:2}; return render(); }
+  if (action==='confirm-reset-final') { localStorage.removeItem(STORAGE_KEY); state=normalizeState(clone(seed)); state.shiftStartedAt=Date.now(); modal=null; view='today'; save(); return render(); }
 }
 
 globalThis.__MEDFLOW_TEST__={
@@ -2370,11 +2428,11 @@ globalThis.__MEDFLOW_TEST__={
   syncPatientPriority,stepMatchesDirection,canEditRouteStep,changeRouteStepType,parseTime,patientTimeMinutes,comparePatients,sortPatients,validTimestamp,
   fmtClock,durationBetween,operationElapsed,pickupTravelElapsed,operationTimersView,setStepDocument,documentStatusLabel,stepHistoryFacts,addButtonPosition,showFloatingAdd,
   captureViewPosition,restoreViewPosition,historyStepView,historyPatientCard,shiftCardView,inferShiftStart,historyView,settingsView,topbarView,
-  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,backupEnvelope,syncPillView,preopChecklistView,
+  resetStepTracking,restoreOrRepeatStep,restoreArchivedStep,mergeStep,mergePatient,mergeStates,concurrentPatientChanges,backupEnvelope,syncPillView,preopChecklistView,
   getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
-  normalizeTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice,
+  normalizeTimeInput,formatTimeTyping,validateTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice,
   operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName,compactPatientCard,teamPatientCompactView
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
