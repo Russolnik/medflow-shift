@@ -841,7 +841,7 @@ function timeChoice(name='time',step={},label='Время') {
 }
 function entryTargetChoice(selected='queue', mode=workMode()) {
   if(mode==='team') return `<div class="entry-target team-entry-target full"><input type="hidden" name="entry-target" value="inbox" /><span><b>Добавится в «Новое»</b><small>В командной смене поручение сначала подтверждается, чтобы два сотрудника не взяли его одновременно.</small></span></div>`;
-  return `<fieldset class="entry-target full"><legend>Куда добавить</legend><div><label><input type="radio" name="entry-target" value="queue" ${selected!=='inbox'?'checked':''}/><span><b>В очередь</b><small>Сразу появится на главной</small></span></label><label><input type="radio" name="entry-target" value="inbox" ${selected==='inbox'?'checked':''}/><span><b>В Новое</b><small>Сначала потребуется принять</small></span></label></div></fieldset>`;
+  return '<input type="hidden" name="entry-target" value="queue" />';
 }
 function careFlagsView(selected=[]) {
   const active=new Set(selected||[]);
@@ -1039,14 +1039,7 @@ function stepHistoryFacts(step, now=Date.now()) {
 function addButtonPosition(settings=state.settings) {
   return ADD_BUTTON_POSITIONS.includes(settings?.addButtonPosition) ? settings.addButtonPosition : 'floating';
 }
-function workMode(settings=state.settings) { return settings?.workMode === 'team' ? 'team' : 'solo'; }
-function workModeSelectorView(compact=false) {
-  const mode=workMode();
-  return `<div class="work-mode-selector ${compact?'compact':''}" role="group" aria-label="Режим смены">
-    <button class="${mode==='solo'?'active':''}" data-action="set-work-mode" data-mode="solo" aria-pressed="${mode==='solo'}"><b>Соло</b>${compact?'':'<span>Только личная очередь</span>'}</button>
-    <button class="${mode==='team'?'active':''}" data-action="set-work-mode" data-mode="team" aria-pressed="${mode==='team'}"><b>Команда</b>${compact?'':'<span>Напарник и сотрудники поста</span>'}</button>
-  </div>`;
-}
+function workMode() { return activeTeamShift() ? 'team' : 'solo'; }
 function showFloatingAdd(currentView=view, settings=state.settings) {
   return canEditTeam() && ['today','inbox','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
 }
@@ -1168,7 +1161,7 @@ function render(preservePosition=false) {
     ${floatingAddView()}
     <nav class="nav">
       ${navButton('today','⌂','Сегодня')}
-      ${navButton('inbox','＋','Новое',pendingIncoming().length)}
+      ${workMode()==='team'?navButton('inbox','＋','Новое',pendingIncoming().length):''}
       ${navButton('directions','⌘','Направления')}
       ${moreNavButton()}
     </nav>
@@ -1459,11 +1452,6 @@ function settingsView() {
     ${cloudSettingsView()}
     ${teamSettingsView()}
     <section class="settings-card">
-      <div class="settings-card-head"><h2>Режим смены</h2><span>${workMode()==='solo'?'личная работа':'совместная работа'}</span></div>
-      <p>В «Соло» скрываются участники, назначения и командные действия. Переключение не удаляет пациентов и историю.</p>
-      ${workModeSelectorView()}
-    </section>
-    <section class="settings-card">
       <div class="settings-card-head"><h2>Отделения</h2><span>${getDepartments().length} в списке</span></div>
       <p>Наше отделение: <b>${esc(departmentLabel(ownDepartmentId()))}</b>. Оно выбирается по умолчанию для новых пациентов.</p>
       <button class="secondary-btn" data-action="manage-departments">Настроить отделения</button>
@@ -1613,7 +1601,6 @@ function modalView() {
     const activeMode=Boolean(state.settings.travelMode);
     return `<div class="modal-backdrop" data-action="close"><section class="modal more-menu" onclick="event.stopPropagation()">
       <div class="more-menu-head"><div><h2>Ещё</h2><p class="modal-sub">Разделы и режим отображения</p></div><button class="secondary-btn more-close" data-action="close" aria-label="Закрыть">×</button></div>
-      <div class="more-mode-block"><span>Смена</span>${workModeSelectorView(true)}</div>
       <button class="travel-mode-toggle ${activeMode?'active':''}" data-action="toggle-travel-mode"><span><b>${activeMode?'Режим в пути включён':'Режим в пути'}</b><small>${activeMode?'Крупные действия и минимум второстепенного':'Увеличить главные кнопки и убрать визуальный шум'}</small></span><i>${activeMode?'Вкл':'Выкл'}</i></button>
       <div class="more-links">
         <button data-view="contacts"><b>☎</b><span><strong>Контакты</strong><small>Врачи, посты и отделения</small></span></button>
@@ -2099,7 +2086,7 @@ async function handleAction(action, el, e) {
     return render(true);
   }
   if (action==='fab-expand') { storeUiState({fabCollapsed:false}); return render(true); }
-  if (action==='add') { modal={type:'quick',target:workMode()==='team'||view==='inbox'?'inbox':'queue'}; return render(true); }
+  if (action==='add') { modal={type:'quick',target:activeTeamShift()?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
   if (action==='search-toggle') { searchOpen=!searchOpen; return render(true); }
   if (action==='search-close') {
@@ -2108,13 +2095,6 @@ async function handleAction(action, el, e) {
     return render(true);
   }
   if (action==='directions-home') { document.querySelector('.section-topbar')?.scrollIntoView({behavior:'smooth',block:'start'}); return; }
-  if (action==='set-work-mode') {
-    if(activeTeamShift()&&el.dataset.mode!=='team') { cloud.message='Сначала покинь общую смену в настройках'; view='settings'; modal=null; return render(true); }
-    state.settings.workMode=el.dataset.mode==='team'?'team':'solo';
-    save();
-    if(modal?.type==='more-menu') modal={type:'more-menu'};
-    return render(true);
-  }
   if(action==='team-create-open'){modal={type:'team-create',error:''};return render(true);}
   if(action==='team-join-open'){modal={type:'team-join',error:''};return render(true);}
   if(action==='team-create-submit'||action==='team-join-submit'){
@@ -2478,7 +2458,7 @@ async function handleAction(action, el, e) {
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname').trim(),room:fd.get('room').trim(),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:type==='operation'?String(fd.get('block')||''):'',transport:'',priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps:[{id:uid(),type,title,time:chosenTime.time,timeFlexible:chosenTime.timeFlexible,state:'active',urgent,needsClarification:!fd.get('room')}],note:'',events:[]};
     markPatientCreated(p); syncPatientPriority(p,urgent);
-    const target=workMode()==='team'||fd.get('entry-target')==='inbox'?'inbox':'queue';
+    const target=activeTeamShift()?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создана быстрая запись');
     if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
     else state.patients.push(p);
@@ -2493,7 +2473,7 @@ async function handleAction(action, el, e) {
     const doctorId=String(fd.get('doctor')||''), doctorName=doctorId&&doctorId!=='external'?(getContacts().find(item=>item.id===doctorId)?.name||''):String(fd.get('doctor-name')||'').trim();
     const p={id:uid(),surname:fd.get('surname'),room:fd.get('room'),departmentId:String(fd.get('department')||''),doctorId,doctorName,block:types.includes('operation')?String(fd.get('block')||''):'',transport:fd.get('transport'),priority:'normal',pinned:false,careFlags:fd.getAll('care-flag').map(String),steps,note:fd.get('note'),events:[]};
     markPatientCreated(p); syncPatientPriority(p,urgent);
-    const target=workMode()==='team'||fd.get('entry-target')==='inbox'?'inbox':'queue';
+    const target=activeTeamShift()?'inbox':'queue';
     log(p,urgent?'Добавлено срочное поручение':'Создан маршрут на сегодня');
     if(target==='inbox') { p.inboxStatus='pending'; p.inboxCreatedAt=Date.now(); state.incoming.push(p); view='inbox'; }
     else state.patients.push(p);
@@ -2556,7 +2536,7 @@ globalThis.__MEDFLOW_TEST__={
   getDepartments,ownDepartmentId,departmentLabel,isOwnDepartment,departmentOptions,patientMatchesDepartment,departmentFiltersView,
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
-  normalizeTimeInput,formatTimeTyping,validateTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice,
+  normalizeTimeInput,formatTimeTyping,validateTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,entryTargetChoice,
   operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName,compactPatientCard,teamPatientCompactView,
   floatingAddView,teamChangeSummary
 };

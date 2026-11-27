@@ -545,12 +545,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v46"));
+  assert.ok(sw.includes("medflow-shell-v47"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=46');
+  assert.equal(manifest.start_url,'./?pwa=47');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -564,8 +564,9 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(appRoot.innerHTML.includes('class="compact-body"'));
   assert.ok(appRoot.innerHTML.includes('class="fab"'));
   assert.ok(appRoot.innerHTML.includes('data-action="open-more"'));
-  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 4);
-  assert.ok(appRoot.innerHTML.includes('data-view="inbox"'));
+  assert.equal((appRoot.innerHTML.match(/class="nav-btn/g) || []).length, 3);
+  assert.ok(!appRoot.innerHTML.includes('data-view="inbox"'));
+  assert.ok(source.includes("workMode()==='team'?navButton('inbox'"));
   assert.ok(!appRoot.innerHTML.includes('class="brand"'));
   assert.ok(appRoot.innerHTML.indexOf('queue-head') < appRoot.innerHTML.indexOf('shift-summary'));
 }
@@ -697,14 +698,14 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.equal(api.directionPatientStatus(waiting,'xray'),'waiting');
   assert.equal(api.directionPatientStatus(handled,'xray'),'handled');
   assert.ok(api.moreNavButton().includes('data-action="open-more"'));
-  assert.equal(api.workMode({}),'solo');
-  assert.equal(api.workMode({workMode:'team'}),'team');
-  assert.ok(api.workModeSelectorView().includes('data-mode="solo"'));
-  assert.ok(api.workModeSelectorView().includes('data-mode="team"'));
-  assert.ok(api.entryTargetChoice('queue','solo').includes('value="queue" checked'));
+  assert.equal(api.workMode(),'solo');
+  assert.ok(source.includes("function workMode() { return activeTeamShift() ? 'team' : 'solo'; }"));
+  assert.ok(!source.includes('data-action="set-work-mode"'));
+  assert.ok(api.entryTargetChoice('queue','solo').includes('type="hidden" name="entry-target" value="queue"'));
+  assert.ok(!api.entryTargetChoice('queue','solo').includes('value="inbox"'));
   assert.ok(api.entryTargetChoice('queue','team').includes('type="hidden" name="entry-target" value="inbox"'));
   assert.ok(source.includes('data-direction="${esc(item.id)}"'));
-  assert.ok(source.includes("workMode()==='team'||fd.get('entry-target')==='inbox'"));
+  assert.ok(source.includes("const target=activeTeamShift()?'inbox':'queue';"));
 }
 
 {
@@ -741,6 +742,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const css=fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8');
   assert.ok(css.includes('[hidden] { display:none!important; }'));
   assert.ok(css.includes('.fab.collapsed'));
+  assert.ok(css.includes('cursor:pointer; opacity:1;'));
   assert.ok(css.includes('.detail-field'));
 }
 
