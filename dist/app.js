@@ -5,10 +5,11 @@ const SYNC_STATE_KEY = 'medflow-sync-state-v2';
 const TEAM_STORAGE_KEY = 'medflow-team-session-v1';
 const UI_STORAGE_KEY = 'medflow-ui-v1';
 const RETRY_DELAYS = [5000, 15000, 30000];
-const TEAM_POLL_INTERVAL = 5000;
+const TEAM_POLL_INTERVAL = 3000;
 const TEAM_LIVE_RECONNECT = 4000;
 const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
+const AUTH_REDIRECT_URL = 'https://russolnik.github.io/medflow-shift/';
 
 const DEFAULT_DIRECTIONS = [
   { id: 'operation', label: 'Операция', locked: true },
@@ -245,20 +246,36 @@ function connectTeamRealtime() {
   let ref=1;
   const send=(event,payload={},sendTopic=topic)=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({topic:sendTopic,event,payload,ref:String(ref++)}));};
   socket.onopen=()=>{
-    team.liveStatus='live';
+    team.liveStatus='connecting';
     send('phx_join',{config:{broadcast:{self:false},presence:{key:cloud.session?.user?.id||''},postgres_changes:[{event:'UPDATE',schema:'public',table:'medflow_shifts',filter:`id=eq.${team.shiftId}`}]},access_token:cloud.session?.access_token||''});
     teamLiveHeartbeat=setInterval(()=>send('heartbeat',{},'phoenix'),25000);
     if(!modal&&view==='settings')render(true);
   };
-  socket.onmessage=event=>{
+  socket.onmessage=async event=>{
     let message;try{message=JSON.parse(event.data);}catch{return;}
+    if(message?.event==='phx_reply'&&message?.payload?.status==='ok') {
+      team.liveStatus='live';
+      if(!modal&&view==='settings')render(true);
+      return;
+    }
+    if(message?.event==='phx_reply'&&message?.payload?.status==='error') {
+      team.liveStatus='reconnecting';
+      cloud.message='Realtime недоступен — используем безопасное фоновое обновление';
+      try{socket.close();}catch{}
+      return;
+    }
+    if(message?.event==='system'&&message?.payload?.status==='error') {
+      team.liveStatus='reconnecting';
+      cloud.message='Realtime не подключён — обновляем смену каждые 3 секунды';
+      return;
+    }
     if(!['postgres_changes','UPDATE'].includes(message?.event))return;
     const record=message?.payload?.data?.record||message?.payload?.record;
     if(record?.id&&record.id!==team.shiftId)return;
     if(Date.now()<teamIgnoreRealtimeUntil)return;
     teamPendingRemote=true;
     showTeamNotice(hasOpenWorkForm()?'Изменения команды применятся после закрытия формы':'Появились изменения в общей смене');
-    syncSharedShift();
+    await syncSharedShift();
     if(!modal)render(true);
   };
   socket.onclose=()=>{
@@ -446,7 +463,7 @@ async function syncSharedShift({preferRemote=false}={}) {
     teamPendingRemote=false;
     await fetchTeamMembers(); clearCloudRetry();
   } catch(error) { cloud.status='error';cloud.message=error.message||'Не удалось синхронизировать общую смену';scheduleCloudRetry(); }
-  finally {cloud.syncing=false;if(!modal&&(view==='settings'||view==='today'||view==='inbox'))render(true);}
+  finally {cloud.syncing=false;if(!modal)render(true);}
 }
 async function pushCloudState() {
   if(activeTeamShift()) return pushSharedShift();
@@ -540,14 +557,16 @@ async function signInCloud(email,password) {
   await syncCloudState();
 }
 async function signUpCloud(email,password) {
-  const result = await cloudRequest('/auth/v1/signup', { method:'POST', body:JSON.stringify({email,password}) }, false);
+  const result = await cloudRequest(`/auth/v1/signup?redirect_to=${encodeURIComponent(AUTH_REDIRECT_URL)}`, { method:'POST', body:JSON.stringify({email,password}) }, false);
   if (result?.access_token) {
     storeCloudSession(result);
     cloud.message = 'Аккаунт создан';
     await discoverTeamShift();
     await syncCloudState();
+    return {confirmed:true,email};
   } else {
     cloud.message = 'Проверь почту и подтверди регистрацию, затем войди';
+    return {confirmed:false,email};
   }
 }
 async function signOutCloud() {
@@ -632,18 +651,19 @@ function exportBackup() {
   document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
 }
 async function requestPasswordReset(email) {
-  const redirectTo=typeof location==='undefined'?'':`${location.origin}${location.pathname}`;
-  return cloudRequest(`/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`,{method:'POST',body:JSON.stringify({email})},false);
+  return cloudRequest(`/auth/v1/recover?redirect_to=${encodeURIComponent(AUTH_REDIRECT_URL)}`,{method:'POST',body:JSON.stringify({email})},false);
 }
 async function handleAuthRedirect() {
   if(typeof location==='undefined' || !location.hash) return;
   const params=new URLSearchParams(location.hash.slice(1));
-  if(params.get('type')!=='recovery' || !params.get('access_token')) return;
+  if(!params.get('access_token')) return;
   const accessToken=params.get('access_token'), refreshToken=params.get('refresh_token');
   const user=await cloudRequest('/auth/v1/user',{headers:{Authorization:`Bearer ${accessToken}`}},false);
   storeCloudSession({access_token:accessToken,refresh_token:refreshToken,expires_at:Math.floor(Date.now()/1000)+Number(params.get('expires_in')||3600),user});
   if(typeof history!=='undefined') history.replaceState(null,'',`${location.pathname}${location.search}`);
-  modal={type:'password-update',error:''}; render();
+  if(params.get('type')==='recovery') modal={type:'password-update',error:''};
+  else modal={type:'auth-confirmed',email:user?.email||''};
+  render();
 }
 function esc(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
 function validTimestamp(value) { return Number.isFinite(value) && value > 0 ? value : null; }
@@ -1536,8 +1556,11 @@ function compactPatientCard(p) {
 }
 
 function teamPatientCompactView(patient) {
-  if(workMode()!=='team' || (!patient.assignedTo && !patient.assignedToName)) return '';
-  return `<div class="compact-assignee">В работе: ${esc(actorName(patient.assignedTo,patient.assignedToName)||'сотрудник')}</div>`;
+  if(workMode()!=='team') return '';
+  const accepted=actorName(patient.acceptedBy,patient.acceptedByName);
+  const assigned=actorName(patient.assignedTo,patient.assignedToName);
+  if(!accepted&&!assigned)return '';
+  return `<div class="compact-assignee">${assigned?`В работе у: ${esc(assigned)}`:`Принял: ${esc(accepted)}`}</div>`;
 }
 
 function teamPatientMetaView(patient) {
@@ -1626,6 +1649,24 @@ function modalView() {
         <button data-view="history"><b>↶</b><span><strong>История</strong><small>Завершённые смены и маршруты</small></span></button>
         <button data-view="settings"><b>⚙</b><span><strong>Настройки</strong><small>Данные, синхронизация и справочники</small></span></button>
       </div>
+    </section></div>`;
+  }
+  if (modal.type === 'auth-check-email') {
+    return `<div class="modal-backdrop"><section class="modal auth-modal auth-result-modal">
+      <div class="auth-result-icon" aria-hidden="true">✉</div>
+      <h2>Подтверди почту</h2>
+      <p>Мы отправили письмо на <b>${esc(modal.email||'указанный email')}</b>.</p>
+      <ol><li>Открой письмо от Supabase.</li><li>Нажми кнопку подтверждения.</li><li>Ты вернёшься в MedFlow уже авторизованным.</li></ol>
+      <p class="auth-result-hint">Если письма нет, проверь папку «Спам». Эту страницу можно закрыть — данные на устройстве сохранятся.</p>
+      <button class="primary-btn auth-submit" data-action="auth-result-signin">Вернуться ко входу</button>
+    </section></div>`;
+  }
+  if (modal.type === 'auth-confirmed') {
+    return `<div class="modal-backdrop"><section class="modal auth-modal auth-result-modal">
+      <div class="auth-result-icon success" aria-hidden="true">✓</div>
+      <h2>Почта подтверждена</h2>
+      <p>${modal.email?`Аккаунт <b>${esc(modal.email)}</b> готов.`:'Аккаунт готов.'} MedFlow уже выполнил вход на этом устройстве.</p>
+      <button class="primary-btn auth-submit" data-action="auth-result-continue">Продолжить</button>
     </section></div>`;
   }
   if (modal.type === 'cloud-auth') {
@@ -2182,6 +2223,8 @@ async function handleAction(action, el, e) {
   }
   if (action==='cloud-status') { view='settings'; return render(); }
   if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
+  if (action==='auth-result-signin') { modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
+  if (action==='auth-result-continue') { modal=null; view='today'; await discoverTeamShift(); await syncCloudState(); return render(true); }
   if (action==='cloud-auth-mode') { modal.authMode=['signup','recover'].includes(el.dataset.mode)?el.dataset.mode:'signin'; modal.error=''; return render(); }
   if (action==='cloud-password-toggle') {
     const input=document.getElementById('cloud-password');
@@ -2195,8 +2238,12 @@ async function handleAction(action, el, e) {
     const fd=new FormData(form), email=String(fd.get('email')||'').trim(), password=String(fd.get('password')||'');
     modal.error='';
     try {
-      if(action==='cloud-signin') await signInCloud(email,password); else await signUpCloud(email,password);
-      modal=null; view='settings'; return render();
+      if(action==='cloud-signin') {
+        await signInCloud(email,password); modal=null; view='settings'; return render();
+      }
+      const result=await signUpCloud(email,password);
+      if(result.confirmed) { modal={type:'auth-confirmed',email}; return render(); }
+      modal={type:'auth-check-email',email}; return render();
     } catch(error) {
       modal.error=authErrorMessage(error);
       return render();

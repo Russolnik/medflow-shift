@@ -29,3 +29,15 @@ The client needs only:
 
 These identify the public application and are not treated as secrets. Data security comes from Auth sessions, grants, and RLS policies.
 
+## Production authentication URL
+
+In Supabase Dashboard open **Authentication → URL Configuration** and set:
+
+- Site URL: `https://russolnik.github.io/medflow-shift/`
+- Redirect URLs: add `https://russolnik.github.io/medflow-shift/**`
+
+MedFlow also sends the exact production redirect URL during sign-up and password recovery. The dashboard allow list is still required; otherwise Supabase falls back to the configured Site URL (often localhost in a new project).
+
+## Shared-shift realtime
+
+Apply `migrations/006_enable_shared_shift_realtime.sql` after the shared-shift migrations. The client uses Postgres Changes when available and a three-second authenticated polling fallback when Realtime is unavailable. Both paths respect the same row-level security policies.

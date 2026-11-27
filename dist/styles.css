@@ -549,6 +549,14 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .auth-error { margin:0; padding:9px 10px; border:1px solid rgba(215,125,137,.22); border-radius:10px; background:rgba(215,125,137,.055); }
 .auth-note { color:var(--muted); font-size:9.5px; line-height:1.45; margin-top:11px; text-align:center; }
 .auth-close { display:block; width:100%; min-height:36px; margin-top:5px; border:0; color:#8f999d; background:transparent; font-size:10px; font-weight:750; cursor:pointer; }
+.auth-result-modal { text-align:center; }
+.auth-result-modal h2 { margin-top:12px; font-size:22px; }
+.auth-result-modal > p { margin:9px 0 0; color:#b9c4c6; font-size:14px; line-height:1.5; }
+.auth-result-icon { width:58px; height:58px; margin:0 auto; display:grid; place-items:center; border:1px solid rgba(151,195,184,.25); border-radius:18px; color:#b9d5ce; background:rgba(151,195,184,.07); font-size:25px; font-weight:900; }
+.auth-result-icon.success { color:#a9d7c8; }
+.auth-result-modal ol { margin:18px 0 0; padding:14px 16px 14px 38px; border:1px solid rgba(222,232,235,.09); border-radius:14px; color:#dce3e4; background:rgba(255,255,255,.02); text-align:left; font-size:13px; line-height:1.55; }
+.auth-result-modal .auth-result-hint { color:#8f9a9d; font-size:12px; }
+.auth-result-modal .auth-submit { margin-top:18px; }
 .settings-actions { display:grid; gap:8px; margin-top:12px; }
 .position-options { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .position-option { min-height:63px; padding:10px; text-align:left; color:var(--text); border:1px solid rgba(222,232,235,.09); border-radius:12px; background:rgba(255,255,255,.012); cursor:pointer; }
