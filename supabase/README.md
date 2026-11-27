@@ -35,8 +35,9 @@ In Supabase Dashboard open **Authentication → URL Configuration** and set:
 
 - Site URL: `https://russolnik.github.io/medflow-shift/`
 - Redirect URLs: add `https://russolnik.github.io/medflow-shift/**`
+- Redirect URLs: add `https://medflow-shift.onrender.com/**`
 
-MedFlow also sends the exact production redirect URL during sign-up and password recovery. The dashboard allow list is still required; otherwise Supabase falls back to the configured Site URL (often localhost in a new project).
+MedFlow sends the current trusted production URL during sign-up and password recovery. A registration started on Render returns to Render; one started on GitHub Pages returns to GitHub Pages. The dashboard allow list is still required; otherwise Supabase falls back to the configured Site URL (often localhost in a new project).
 
 ## Shared-shift realtime
 

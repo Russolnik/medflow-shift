@@ -9,7 +9,14 @@ const TEAM_POLL_INTERVAL = 3000;
 const TEAM_LIVE_RECONNECT = 4000;
 const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
-const AUTH_REDIRECT_URL = 'https://russolnik.github.io/medflow-shift/';
+const AUTH_REDIRECT_ORIGINS = new Set(['https://russolnik.github.io','https://medflow-shift.onrender.com']);
+const AUTH_REDIRECT_FALLBACK = 'https://russolnik.github.io/medflow-shift/';
+
+function authRedirectUrl() {
+  if(typeof location==='undefined'||!AUTH_REDIRECT_ORIGINS.has(location.origin))return AUTH_REDIRECT_FALLBACK;
+  const basePath=location.pathname.replace(/index\.html$/,'');
+  return `${location.origin}${basePath.endsWith('/')?basePath:`${basePath}/`}`;
+}
 
 const DEFAULT_DIRECTIONS = [
   { id: 'operation', label: 'Операция', locked: true },
@@ -557,7 +564,7 @@ async function signInCloud(email,password) {
   await syncCloudState();
 }
 async function signUpCloud(email,password) {
-  const result = await cloudRequest(`/auth/v1/signup?redirect_to=${encodeURIComponent(AUTH_REDIRECT_URL)}`, { method:'POST', body:JSON.stringify({email,password}) }, false);
+  const result = await cloudRequest(`/auth/v1/signup?redirect_to=${encodeURIComponent(authRedirectUrl())}`, { method:'POST', body:JSON.stringify({email,password}) }, false);
   if (result?.access_token) {
     storeCloudSession(result);
     cloud.message = 'Аккаунт создан';
@@ -651,7 +658,7 @@ function exportBackup() {
   document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
 }
 async function requestPasswordReset(email) {
-  return cloudRequest(`/auth/v1/recover?redirect_to=${encodeURIComponent(AUTH_REDIRECT_URL)}`,{method:'POST',body:JSON.stringify({email})},false);
+  return cloudRequest(`/auth/v1/recover?redirect_to=${encodeURIComponent(authRedirectUrl())}`,{method:'POST',body:JSON.stringify({email})},false);
 }
 async function handleAuthRedirect() {
   if(typeof location==='undefined' || !location.hash) return;

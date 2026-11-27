@@ -545,12 +545,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v50"));
+  assert.ok(sw.includes("medflow-shell-v51"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=50');
+  assert.equal(manifest.start_url,'./?pwa=51');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -584,7 +584,8 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('class="auth-switch"'));
   assert.ok(source.includes('data-action="cloud-password-toggle"'));
   assert.ok(source.includes('authErrorMessage(error)'));
-  assert.ok(source.includes("AUTH_REDIRECT_URL = 'https://russolnik.github.io/medflow-shift/'"));
+  assert.ok(source.includes("'https://medflow-shift.onrender.com'"));
+  assert.ok(source.includes('function authRedirectUrl()'));
   assert.ok(source.includes('/auth/v1/signup?redirect_to='));
   assert.ok(source.includes("modal={type:'auth-check-email',email}"));
   assert.ok(source.includes("modal={type:'auth-confirmed',email:user?.email||''}"));
