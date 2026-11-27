@@ -3,6 +3,7 @@ const AUTH_STORAGE_KEY = 'medflow-supabase-session-v1';
 const SYNC_META_KEY = 'medflow-sync-meta-v1';
 const SYNC_STATE_KEY = 'medflow-sync-state-v2';
 const TEAM_STORAGE_KEY = 'medflow-team-session-v1';
+const UI_STORAGE_KEY = 'medflow-ui-v1';
 const RETRY_DELAYS = [5000, 15000, 30000];
 const TEAM_POLL_INTERVAL = 5000;
 const TEAM_LIVE_RECONNECT = 4000;
@@ -126,12 +127,28 @@ let teamLiveReconnect = null;
 let teamNotice = null;
 let teamNoticeTimer = null;
 let teamIgnoreRealtimeUntil = 0;
+let teamPendingRemote = false;
+let uiState = loadUiState();
+
+function loadUiState() {
+  try {
+    const value=JSON.parse(localStorage.getItem(UI_STORAGE_KEY))||{};
+    return {
+      fabCollapsed:Boolean(value.fabCollapsed),
+      notificationLevel:['important','all','off'].includes(value.notificationLevel)?value.notificationLevel:'important'
+    };
+  } catch { return {fabCollapsed:false,notificationLevel:'important'}; }
+}
+function storeUiState(next={}) {
+  uiState={...uiState,...next};
+  localStorage.setItem(UI_STORAGE_KEY,JSON.stringify(uiState));
+}
 
 function loadTeamSession() {
   try {
     const value=JSON.parse(localStorage.getItem(TEAM_STORAGE_KEY))||{};
-    return {shiftId:String(value.shiftId||''),title:String(value.title||''),role:String(value.role||''),displayName:String(value.displayName||''),remoteVersion:String(value.remoteVersion||''),lastLocalAt:Number(value.lastLocalAt)||0,members:Array.isArray(value.members)?value.members:[],pendingReleases:Array.isArray(value.pendingReleases)?value.pendingReleases:[],invite:null,loading:false,error:''};
-  } catch { return {shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null,loading:false,error:''}; }
+    return {shiftId:String(value.shiftId||''),title:String(value.title||''),role:String(value.role||''),displayName:String(value.displayName||''),remoteVersion:String(value.remoteVersion||''),lastLocalAt:Number(value.lastLocalAt)||0,members:Array.isArray(value.members)?value.members:[],pendingReleases:Array.isArray(value.pendingReleases)?value.pendingReleases:[],invite:null,loading:false,error:'',liveStatus:'connecting'};
+  } catch { return {shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null,loading:false,error:'',liveStatus:'off'}; }
 }
 function storeTeamSession(next={}) {
   team={...team,...next};
@@ -168,13 +185,45 @@ async function flushTeamReleases() {
   storeTeamSession({pendingReleases:remaining});
 }
 
-function showTeamNotice(message='Общая смена обновлена') {
+function notificationOptions(message) {
+  return {
+    body:message,
+    tag:`medflow-team-${team.shiftId||'shift'}`,
+    renotify:true,
+    silent:false,
+    icon:'./icon.svg',
+    data:{url:location.href}
+  };
+}
+async function showSystemNotification(message) {
+  if(notificationPermission()!=='granted')return false;
+  try {
+    if(navigator.serviceWorker?.ready) {
+      const registration=await navigator.serviceWorker.ready;
+      await registration.showNotification('MedFlow',notificationOptions(message));
+      return true;
+    }
+    new Notification('MedFlow',notificationOptions(message));
+    return true;
+  } catch { return false; }
+}
+function teamChangeSummary(localState,remoteState) {
+  const localIncoming=new Set((localState?.incoming||[]).filter(item=>item.inboxStatus==='pending').map(item=>item.id));
+  const added=(remoteState?.incoming||[]).filter(item=>item.inboxStatus==='pending'&&!localIncoming.has(item.id));
+  if(added.some(item=>item.priority==='urgent'||currentStep(item)?.urgent)) return {message:'Новое срочное поручение',important:true};
+  if(added.length) return {message:`Новых поручений: ${added.length}`,important:true};
+  const ownId=cloud.session?.user?.id||'';
+  const localPatients=new Map((localState?.patients||[]).map(item=>[item.id,item]));
+  const assigned=(remoteState?.patients||[]).filter(item=>item.assignedTo===ownId&&localPatients.get(item.id)?.assignedTo!==ownId);
+  if(assigned.length) return {message:'Вам передан пациент',important:true};
+  return {message:'Общая смена обновлена',important:false};
+}
+function showTeamNotice(message='Общая смена обновлена', important=false) {
   teamNotice=message;
   if(teamNoticeTimer) clearTimeout(teamNoticeTimer);
   teamNoticeTimer=setTimeout(()=>{teamNotice=null;teamNoticeTimer=null;if(!modal)render(true);},5000);
-  if(document.hidden && 'Notification' in globalThis && Notification.permission==='granted') {
-    try { new Notification('MedFlow', {body:message,tag:'medflow-team-update',silent:true}); } catch {}
-  }
+  const level=uiState.notificationLevel;
+  if(document.hidden&&level!=='off'&&(level==='all'||important)) showSystemNotification(message);
 }
 function notificationPermission() {
   return 'Notification' in globalThis ? Notification.permission : 'unsupported';
@@ -185,6 +234,7 @@ function disconnectTeamRealtime() {
   teamLiveHeartbeat=null;teamLiveReconnect=null;
   if(teamLiveSocket) { try { teamLiveSocket.onclose=null;teamLiveSocket.close(); } catch {} }
   teamLiveSocket=null;
+  team.liveStatus='off';
 }
 function connectTeamRealtime() {
   if(!('WebSocket' in globalThis)||!activeTeamShift()||!navigator.onLine||teamLiveSocket?.readyState===WebSocket.OPEN||teamLiveSocket?.readyState===WebSocket.CONNECTING)return;
@@ -195,8 +245,10 @@ function connectTeamRealtime() {
   let ref=1;
   const send=(event,payload={},sendTopic=topic)=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({topic:sendTopic,event,payload,ref:String(ref++)}));};
   socket.onopen=()=>{
+    team.liveStatus='live';
     send('phx_join',{config:{broadcast:{self:false},presence:{key:cloud.session?.user?.id||''},postgres_changes:[{event:'UPDATE',schema:'public',table:'medflow_shifts',filter:`id=eq.${team.shiftId}`}]},access_token:cloud.session?.access_token||''});
     teamLiveHeartbeat=setInterval(()=>send('heartbeat',{},'phoenix'),25000);
+    if(!modal&&view==='settings')render(true);
   };
   socket.onmessage=event=>{
     let message;try{message=JSON.parse(event.data);}catch{return;}
@@ -204,12 +256,15 @@ function connectTeamRealtime() {
     const record=message?.payload?.data?.record||message?.payload?.record;
     if(record?.id&&record.id!==team.shiftId)return;
     if(Date.now()<teamIgnoreRealtimeUntil)return;
-    showTeamNotice('Появились изменения в общей смене');
+    teamPendingRemote=true;
+    showTeamNotice(hasOpenWorkForm()?'Изменения команды применятся после закрытия формы':'Появились изменения в общей смене');
     syncSharedShift();
     if(!modal)render(true);
   };
   socket.onclose=()=>{
     if(teamLiveHeartbeat)clearInterval(teamLiveHeartbeat);teamLiveHeartbeat=null;teamLiveSocket=null;
+    team.liveStatus=navigator.onLine?'reconnecting':'off';
+    if(!modal&&view==='settings')render(true);
     if(activeTeamShift()&&navigator.onLine)teamLiveReconnect=setTimeout(connectTeamRealtime,TEAM_LIVE_RECONNECT);
   };
   socket.onerror=()=>{try{socket.close();}catch{}};
@@ -361,6 +416,7 @@ async function syncSharedShift({preferRemote=false}={}) {
     const rows=await cloudRequest(`/rest/v1/medflow_shifts?select=id,title,payload,updated_at,closed_at&id=eq.${encodeURIComponent(team.shiftId)}&limit=1`);
     const remote=rows?.[0]; if(!remote) throw new Error('Общая смена не найдена или доступ отозван');
     const remoteChanged=Boolean(team.remoteVersion&&remote.updated_at!==team.remoteVersion);
+    const changeSummary=remoteChanged?teamChangeSummary(state,remote.payload):null;
     const localDirty=localUpdatedAt>(team.lastLocalAt||0);
     if(preferRemote||(!localDirty&&(remoteChanged||!team.remoteVersion))) {
       state=normalizeState(clone(remote.payload)); state.settings.workMode='team';
@@ -386,6 +442,8 @@ async function syncSharedShift({preferRemote=false}={}) {
       storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,title:remote.title||team.title});
       cloud.lastSyncedAt=Date.now();cloud.status='synced';cloud.message='';
     }
+    if(changeSummary) showTeamNotice(changeSummary.message,changeSummary.important);
+    teamPendingRemote=false;
     await fetchTeamMembers(); clearCloudRetry();
   } catch(error) { cloud.status='error';cloud.message=error.message||'Не удалось синхронизировать общую смену';scheduleCloudRetry(); }
   finally {cloud.syncing=false;if(!modal&&(view==='settings'||view==='today'||view==='inbox'))render(true);}
@@ -992,6 +1050,11 @@ function workModeSelectorView(compact=false) {
 function showFloatingAdd(currentView=view, settings=state.settings) {
   return canEditTeam() && ['today','inbox','directions'].includes(currentView) && addButtonPosition(settings) === 'floating';
 }
+function floatingAddView() {
+  if(!showFloatingAdd())return '';
+  if(uiState.fabCollapsed) return '<button class="fab collapsed" data-action="fab-expand" aria-label="Показать кнопку добавления">‹</button>';
+  return '<button class="fab" data-action="add" aria-label="Записать пациента" title="Свайп вправо — скрыть">＋</button>';
+}
 function captureViewPosition() {
   const filters=Array.from(document.querySelectorAll?.('.filters') || []);
   return {
@@ -1102,7 +1165,7 @@ function render(preservePosition=false) {
       ${view === 'directions' ? sortControl() : ''}
       ${view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
     </main>
-    ${showFloatingAdd() ? '<button class="fab" data-action="add" aria-label="Записать пациента">＋</button>' : ''}
+    ${floatingAddView()}
     <nav class="nav">
       ${navButton('today','⌂','Сегодня')}
       ${navButton('inbox','＋','Новое',pendingIncoming().length)}
@@ -1382,8 +1445,11 @@ function teamSettingsView() {
   if(!activeTeamShift()) return `<section class="settings-card team-settings-card"><div class="settings-card-head"><h2>Общая смена</h2><span>не подключена</span></div><p>Создай смену для своего отделения или введи код от владельца. Личные данные останутся отдельной копией.</p><div class="settings-actions"><button class="primary-btn" data-action="team-create-open">Создать смену</button><button class="secondary-btn" data-action="team-join-open">Ввести код</button></div></section>`;
   const actor=currentActor();
   const members=team.members.map(member=>`<div class="team-member"><div><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}${member.user_id===actor.id?' · это вы':''}</span></div>${canManageTeam()&&member.user_id!==actor.id?`<button class="secondary-btn" data-action="team-member-open" data-member="${esc(member.user_id)}">Права</button>`:''}</div>`).join('');
-  const notificationButton=notificationPermission()==='granted'?'<button class="secondary-btn" disabled>Уведомления включены</button>':notificationPermission()==='unsupported'?'':'<button class="secondary-btn" data-action="notifications-enable">Включить уведомления</button>';
-  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))}</span></div><p>Очередь обновляется между участниками в реальном времени. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}${notificationButton}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
+  const permission=notificationPermission();
+  const liveLabel=team.liveStatus==='live'?'онлайн':team.liveStatus==='reconnecting'?'переподключение':'не в эфире';
+  const notificationButton=permission==='granted'?'<button class="secondary-btn" data-action="notifications-test">Проверить уведомление</button>':permission==='unsupported'?'':'<button class="secondary-btn" data-action="notifications-enable">Разрешить уведомления</button>';
+  const notificationSettings=permission==='unsupported'?'':`<div class="notification-settings"><label><span>Что показывать на телефоне и часах</span><select data-notification-level><option value="important" ${uiState.notificationLevel==='important'?'selected':''}>Только важное</option><option value="all" ${uiState.notificationLevel==='all'?'selected':''}>Все изменения смены</option><option value="off" ${uiState.notificationLevel==='off'?'selected':''}>Не показывать</option></select></label><small>Без фамилии и диагноза: только «новое поручение», «срочно» или «вам передан пациент».</small></div>`;
+  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))} · ${liveLabel}</span></div><p>Очередь обновляется между участниками в реальном времени. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}${notificationSettings}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}${notificationButton}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
 }
 
 function settingsView() {
@@ -1625,7 +1691,12 @@ function modalView() {
     return `<div class="modal-backdrop" data-action="close"><section class="modal" onclick="event.stopPropagation()">
       <div class="row between"><div><h2>${esc(p.surname)} · палата ${esc(p.room || 'уточнить')}</h2><p class="modal-sub">Полная карточка пациента</p></div>${hasTodayOperation(p)&&p.block?`<span class="badge ${p.block}">${blockLabel(p.block)}</span>`:''}</div>
       <div class="detail-block"><div class="current-label">Маршрут на сегодня</div><div class="route-detail">${p.steps.map((s,i)=>`<div class="route-detail-item ${s.state==='done'?'done':s===currentStep(p)?'active':''}"><span>${s.state==='done'?'✓':i+1}</span><b>${esc(s.title)}${stepTimeLabel(s)?` <small>· ${esc(stepTimeLabel(s))}</small>`:''}</b></div>`).join('')}</div></div>
-      <div class="detail-grid"><div><span>Отделение</span><b>${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · наше':''}</b></div><div><span>Врач</span><b>${esc(patientDoctor(p)?.name||'Не указан')}</b></div><div><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b></div><div><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b></div></div>
+      <div class="detail-grid">
+        <button class="detail-field" data-action="edit-patient-field" data-patient="${p.id}" data-field="department" aria-label="Изменить отделение"><span>Отделение</span><b>${esc(departmentLabel(p.departmentId))}${isOwnDepartment(p)?' · наше':''}</b><i>Изменить</i></button>
+        <button class="detail-field" data-action="edit-patient-field" data-patient="${p.id}" data-field="doctor" aria-label="Изменить врача"><span>Врач</span><b>${esc(patientDoctor(p)?.name||'Не указан')}</b><i>Изменить</i></button>
+        <button class="detail-field" data-action="edit-patient-field" data-patient="${p.id}" data-field="transport" aria-label="Изменить способ передвижения"><span>Передвижение</span><b>${esc(p.transport || 'Не указано')}</b><i>Изменить</i></button>
+        <button class="detail-field" data-action="edit-patient-field" data-patient="${p.id}" data-field="urgent" aria-label="Изменить приоритет"><span>Приоритет</span><b>${p.priority==='urgent'?'Срочный':hasTodayOperation(p)?'Операция сегодня':'Обычный'}</b><i>Изменить</i></button>
+      </div>
       ${teamPatientMetaView(p)}
       ${patientMissingFields(p).length?`<div class="detail-warning">⚠ Уточнить: ${esc(patientMissingFields(p).join(', '))}</div>`:''}
       ${patientCareFlags(p).length?`<div class="care-flag-badges">${patientCareFlags(p).map(item=>`<span>${item.icon} ${esc(item.label)}</span>`).join('')}</div>`:''}
@@ -1653,17 +1724,17 @@ function modalView() {
       <form id="edit-patient-form" class="form-grid">
         <div class="field"><label>Фамилия</label><input required name="surname" value="${esc(p.surname)}" /></div>
         <div class="field"><label>Палата</label><input name="room" value="${esc(p.room || '')}" placeholder="Можно уточнить позже" /></div>
-        <div class="field"><label>Отделение</label><select name="department">${departmentOptions(p.departmentId)}</select></div>
-        <div class="field"><label>Врач</label><select name="doctor">${doctorOptions(p)}</select></div>
+        <div class="field" data-edit-field="department"><label>Отделение</label><select name="department">${departmentOptions(p.departmentId)}</select></div>
+        <div class="field" data-edit-field="doctor"><label>Врач</label><select name="doctor">${doctorOptions(p)}</select></div>
         <div class="field"><label>Врач вручную</label><input name="doctor-name" value="${esc(p.doctorName||'')}" placeholder="Если врача нет в контактах" /></div>
-        <div class="field"><label>Передвижение</label><select name="transport">
+        <div class="field" data-edit-field="transport"><label>Передвижение</label><select name="transport">
           ${['','Пешком с сопровождением','Кресло','Каталка'].map(x=>`<option value="${x}" ${p.transport===x?'selected':''}>${x||'Уточнить позже'}</option>`).join('')}
         </select></div>
         ${hasTodayOperation(p)?`<div class="field operation-field"><label>Оперблок</label><select name="block">
           <option value="" ${!p.block?'selected':''}>Не указан</option><option value="op" ${p.block==='op'?'selected':''}>Оперблок (ОПРБЛК)</option><option value="angio" ${p.block==='angio'?'selected':''}>Ангиоблок (АНГБЛК)</option>
         </select></div>`:''}
         ${timeChoice('time',editedStep,'Время текущего этапа')}
-        <label class="urgent-toggle full"><input type="checkbox" name="urgent" ${urgent?'checked':''} /><span><b>Срочно</b><small>Поднять пациента наверх очереди</small></span></label>
+        <label class="urgent-toggle full" data-edit-field="urgent"><input type="checkbox" name="urgent" ${urgent?'checked':''} /><span><b>Срочно</b><small>Поднять пациента наверх очереди</small></span></label>
         <div class="field full">${careFlagsView(p.careFlags)}</div>
         <div class="field full"><label>Заметка</label><textarea name="note" placeholder="Короткое уточнение">${esc(p.note || '')}</textarea></div>
       </form>
@@ -1802,6 +1873,34 @@ function modalView() {
   return '';
 }
 
+function bindFloatingAddGesture() {
+  const button=document.querySelector('.fab');
+  if(!button)return;
+  if(button.classList.contains('collapsed')) {
+    button.onclick=event=>handleAction('fab-expand',button,event);
+    return;
+  }
+  let start=null;
+  let swiped=false;
+  button.onpointerdown=event=>{
+    start={x:event.clientX,y:event.clientY,id:event.pointerId};
+    swiped=false;
+    button.setPointerCapture?.(event.pointerId);
+  };
+  button.onpointerup=event=>{
+    if(!start)return;
+    const dx=event.clientX-start.x,dy=event.clientY-start.y;
+    swiped=dx>30&&Math.abs(dx)>Math.abs(dy)*1.2;
+    start=null;
+    if(swiped){storeUiState({fabCollapsed:true});render(true);}
+  };
+  button.onpointercancel=()=>{start=null;};
+  button.onclick=event=>{
+    if(swiped){swiped=false;event.preventDefault();return;}
+    handleAction('add',button,event);
+  };
+}
+
 function bind() {
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;modal=null;searchOpen=false;render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
@@ -1827,7 +1926,9 @@ function bind() {
   document.querySelectorAll('[data-time-input]').forEach(el=>bindTimeInput(el));
   document.querySelectorAll('[data-time-none]').forEach(el=>{const update=()=>{const input=document.querySelector(`[data-time-input="${el.dataset.timeNone}"]`);if(input){input.disabled=el.checked;if(el.checked){input.value='';input.setCustomValidity('');}}};el.onchange=update;update();});
   document.querySelectorAll('[data-time-now]').forEach(el=>el.onclick=()=>{const name=el.dataset.timeNow,input=document.querySelector(`[data-time-input="${name}"]`),none=document.querySelector(`[data-time-none="${name}"]`);if(!input)return;if(none)none.checked=false;input.disabled=false;const now=new Date();input.value=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;input.setCustomValidity('');});
+  document.querySelectorAll('[data-notification-level]').forEach(el=>el.onchange=()=>handleAction('notification-level',el));
   document.querySelectorAll('#quick-form,#patient-form').forEach(form=>{const update=()=>refreshOperationField(form);form.querySelectorAll('[name="type"],[name="extra-direction"]').forEach(el=>el.onchange=update);update();});
+  focusPatientEditField();
   const routeTimeNone=document.getElementById('route-time-none');
   const routeTimeInput=document.getElementById('route-time');if(routeTimeInput)bindTimeInput(routeTimeInput);
   if(routeTimeNone)routeTimeNone.onchange=()=>{const input=document.getElementById('route-time');if(input){input.disabled=routeTimeNone.checked;if(routeTimeNone.checked){input.value='';input.setCustomValidity('');}}};
@@ -1835,6 +1936,7 @@ function bind() {
   document.querySelectorAll('[data-department-name]').forEach(el=>el.oninput=()=>{ const item=modal?.departments?.find(item=>item.id===el.dataset.departmentName); if(item) item.label=el.value; });
   document.querySelectorAll('[data-department-own]').forEach(el=>el.onchange=()=>{ if(modal?.type==='departments' && el.checked) modal.ownDepartmentId=el.dataset.departmentOwn; });
   document.querySelectorAll('[data-action]').forEach(el=>el.onclick=(e)=>handleAction(el.dataset.action, el, e));
+  bindFloatingAddGesture();
   document.querySelectorAll('[data-card-details]').forEach(card=>{
     const open=event=>{if(event.target.closest('button,a,input,select,textarea,label,summary'))return;modal={type:'details',patient:card.dataset.cardDetails};render(true);};
     card.onclick=open;
@@ -1866,6 +1968,16 @@ function refreshOperationField(form) {
   const field=form?.querySelector('[data-operation-field]');if(!field)return;
   const operation=hasOperationSelection(form);field.hidden=!operation;
   if(!operation){const select=field.querySelector('[name="block"]');if(select)select.value='';}
+}
+function focusPatientEditField() {
+  if(modal?.type!=='edit-patient'||!modal.focusField)return;
+  const field=document.querySelector(`[data-edit-field="${CSS.escape(modal.focusField)}"]`);
+  const control=field?.querySelector('input,select,textarea');
+  if(!field||!control)return;
+  requestAnimationFrame(()=>{
+    field.scrollIntoView({behavior:'smooth',block:'center'});
+    control.focus();
+  });
 }
 function bindSearchInput(input, kind) {
   input.oninput=()=>liveFilterSearch(input,kind);
@@ -1976,6 +2088,17 @@ async function handleAction(action, el, e) {
     cloud.message=permission==='granted'?'Уведомления общей смены включены':'Браузер не разрешил уведомления';
     return render(true);
   }
+  if (action==='notifications-test') {
+    const shown=await showSystemNotification('Тест: новое поручение в MedFlow');
+    cloud.message=shown?'Тестовое уведомление отправлено':'Сначала разреши уведомления для MedFlow';
+    return render(true);
+  }
+  if (action==='notification-level') {
+    storeUiState({notificationLevel:['important','all','off'].includes(el.value)?el.value:'important'});
+    cloud.message='Настройка уведомлений сохранена на этом устройстве';
+    return render(true);
+  }
+  if (action==='fab-expand') { storeUiState({fabCollapsed:false}); return render(true); }
   if (action==='add') { modal={type:'quick',target:workMode()==='team'||view==='inbox'?'inbox':'queue'}; return render(true); }
   if (action==='open-more') { modal={type:'more-menu'}; return render(true); }
   if (action==='search-toggle') { searchOpen=!searchOpen; return render(true); }
@@ -2195,6 +2318,7 @@ async function handleAction(action, el, e) {
     modal=null; save(); return render(true);
   }
   if (action==='details') { modal={type:'details',patient:el.dataset.patient}; return render(true); }
+  if (action==='edit-patient-field') { modal={type:'edit-patient',patient:el.dataset.patient,focusField:el.dataset.field}; return render(true); }
   if (action==='edit-patient') { modal={type:'edit-patient',patient:el.dataset.patient}; return render(true); }
   if (action==='rollback-status') {
     const p=state.patients.find(item=>item.id===el.dataset.patient), s=p&&currentStep(p); if(!p||!s)return;
@@ -2433,7 +2557,8 @@ globalThis.__MEDFLOW_TEST__={
   normalizeContact,contactRoleLabel,doctorOptions,patientDoctor,phoneHref,contactsView,contactCard,
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
   normalizeTimeInput,formatTimeTyping,validateTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,workModeSelectorView,entryTargetChoice,
-  operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName,compactPatientCard,teamPatientCompactView
+  operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName,compactPatientCard,teamPatientCompactView,
+  floatingAddView,teamChangeSummary
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
 setInterval(()=>{ if(!activeTeamShift()&&!modal&&cloud.session&&navigator.onLine&&!cloud.syncing) syncCloudState(); },20000);

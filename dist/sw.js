@@ -1,4 +1,4 @@
-const CACHE = 'medflow-shell-v45';
+const CACHE = 'medflow-shell-v46';
 const SHELL = ['./index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', event => {
@@ -40,4 +40,28 @@ self.addEventListener('fetch', event => {
     if (response.ok) caches.open(CACHE).then(cache => cache.put(event.request, response.clone()));
     return response;
   }).catch(() => new Response('', { status: 503 }))));
+});
+
+self.addEventListener('push', event => {
+  let payload={};
+  try { payload=event.data?.json?.()||{}; } catch { payload={}; }
+  event.waitUntil(self.registration.showNotification('MedFlow', {
+    body:String(payload.body||'Общая смена обновлена'),
+    tag:String(payload.tag||'medflow-team-update'),
+    renotify:true,
+    silent:false,
+    icon:'./icon.svg',
+    data:{url:String(payload.url||'./')}
+  }));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const target=new URL(event.notification.data?.url||'./',self.location.href).href;
+  event.waitUntil((async()=>{
+    const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true});
+    const existing=windows.find(client=>client.url.startsWith(self.location.origin));
+    if(existing){await existing.focus();if('navigate' in existing)await existing.navigate(target);return;}
+    await self.clients.openWindow(target);
+  })());
 });

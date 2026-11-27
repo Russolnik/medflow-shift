@@ -545,12 +545,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v45"));
+  assert.ok(sw.includes("medflow-shell-v46"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=45');
+  assert.equal(manifest.start_url,'./?pwa=46');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -624,7 +624,14 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('data-card-details'));
   assert.ok(source.includes('data-block-filter'));
   assert.ok(source.includes('connectTeamRealtime()'));
-  assert.ok(source.includes("Notification.permission==='granted'"));
+  assert.ok(source.includes("notificationPermission()!=='granted'"));
+  assert.ok(source.includes('data-action="edit-patient-field"'));
+  assert.ok(source.includes('data-edit-field="department"'));
+  assert.ok(source.includes('data-operation-field hidden'));
+  assert.ok(source.includes('bindFloatingAddGesture()'));
+  assert.ok(source.includes("data-action=\"fab-expand\""));
+  assert.ok(source.includes('showSystemNotification'));
+  assert.ok(source.includes('data-notification-level'));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
@@ -664,6 +671,14 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const remote={patients:[{id:'same',updatedAt:600,updatedBy:'owner'}],incoming:[]};
   assert.deepEqual([...api.concurrentPatientChanges(local,remote,400)],['same']);
   assert.equal(api.concurrentPatientChanges(local,remote,550).length,0);
+}
+
+{
+  const local={patients:[],incoming:[]};
+  const remote={patients:[],incoming:[{id:'urgent-new',inboxStatus:'pending',priority:'urgent',steps:[step('КТ','active','ct')]}]};
+  const summary=api.teamChangeSummary(local,remote);
+  assert.equal(summary.message,'Новое срочное поручение');
+  assert.equal(summary.important,true);
 }
 
 {
@@ -720,6 +735,13 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(!html.includes('Подробная заметка'));
   assert.ok(!html.includes('compact-next'));
   assert.equal(api.teamPatientCompactView(patient),'');
+}
+
+{
+  const css=fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8');
+  assert.ok(css.includes('[hidden] { display:none!important; }'));
+  assert.ok(css.includes('.fab.collapsed'));
+  assert.ok(css.includes('.detail-field'));
 }
 
 {
