@@ -280,6 +280,17 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .undo-toast button { flex:0 0 auto; min-height:30px; padding:5px 11px; border:1px solid rgba(203,182,122,.26); border-radius:999px; color:#d8c78f; background:rgba(203,182,122,.06); font-size:10px; font-weight:850; cursor:pointer; }
 .team-notice { position:fixed; z-index:46; left:50%; top:max(12px,env(safe-area-inset-top)); width:min(calc(100% - 32px),688px); transform:translateX(-50%); display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 13px; border:1px solid rgba(151,195,184,.25); border-radius:13px; color:#dce7e4; background:rgba(14,22,23,.96); box-shadow:0 14px 36px rgba(0,0,0,.36); backdrop-filter:blur(14px); cursor:pointer; }
 .team-notice b { color:#a9c9c1; font-size:12px; }
+.team-notice.important { border-color:rgba(226,183,105,.55); box-shadow:0 14px 36px rgba(0,0,0,.36),0 0 0 1px rgba(226,183,105,.12); }
+.team-notice.important b { color:#f0ce8e; }
+.notification-permission { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:11px 12px; border:1px solid rgba(226,183,105,.26); border-radius:14px; background:rgba(226,183,105,.055); }
+.notification-permission span { display:grid; gap:3px; min-width:0; }
+.notification-permission b { font-size:13px; color:#e9e4d8; }
+.notification-permission small { color:var(--muted); font-size:11px; line-height:1.35; }
+.notification-permission button { flex:none; min-height:36px; padding:0 12px; border:1px solid rgba(226,183,105,.35); border-radius:11px; color:#f0ce8e; background:transparent; font-weight:700; }
+.shared-shift-loading { min-height:52vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:34px 24px; text-align:center; }
+.shared-shift-loading h2 { margin:4px 0 0; font-size:20px; }
+.shared-shift-loading p { max-width:360px; margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
+.loading-spinner,.button-spinner { display:inline-block; width:22px; height:22px; border:2px solid rgba(196,219,213,.2); border-top-color:#b8d9d1; border-radius:50%; animation:medflow-spin .8s linear infinite; }
 .modal-backdrop { position:fixed; z-index:50; inset:0; padding:16px; background:rgba(2,7,14,.72); backdrop-filter:blur(8px); display:flex; align-items:flex-end; justify-content:center; }
 .modal { width:min(100%,680px); max-height:92vh; max-height:92dvh; overflow:auto; background:#0d1116; border:1px solid rgba(222,232,235,.12); border-radius:24px 24px 16px 16px; padding:19px; box-shadow:var(--shadow); }
 .modal h2 { font-size:20px; }
@@ -521,6 +532,7 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .sync-pill.offline i { background:#7f898d; }
 .sync-pill.error i,.sync-pill.conflict i { background:#cf7b86; }
 @keyframes sync-pulse { 50% { opacity:.32; transform:scale(.75); } }
+@keyframes medflow-spin { to { transform:rotate(360deg); } }
 .visually-hidden { position:fixed!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0 0 0 0)!important; white-space:nowrap!important; border:0!important; }
 .backup-actions { grid-template-columns:1fr 1fr; }
 .auth-recover { display:block; margin:9px auto 0; padding:7px 10px; border:0; color:#b9c5c7; background:transparent; font-size:10px; font-weight:800; text-decoration:underline; text-underline-offset:3px; cursor:pointer; }
@@ -546,6 +558,9 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .password-field input { padding-right:83px; }
 .password-field button { position:absolute; top:5px; right:5px; min-width:70px; height:38px; border:0; border-radius:9px; color:#aeb8ba; background:rgba(255,255,255,.045); font-size:9px; font-weight:800; cursor:pointer; }
 .auth-submit { width:100%; min-height:48px; margin-top:2px; }
+.auth-submit.loading { display:flex; align-items:center; justify-content:center; gap:10px; cursor:wait; }
+.auth-submit .button-spinner { width:18px; height:18px; border-color:rgba(8,15,18,.2); border-top-color:#081012; }
+.auth-submit:disabled { opacity:.82; }
 .auth-error { margin:0; padding:9px 10px; border:1px solid rgba(215,125,137,.22); border-radius:10px; background:rgba(215,125,137,.055); }
 .auth-note { color:var(--muted); font-size:9.5px; line-height:1.45; margin-top:11px; text-align:center; }
 .auth-close { display:block; width:100%; min-height:36px; margin-top:5px; border:0; color:#8f999d; background:transparent; font-size:10px; font-weight:750; cursor:pointer; }

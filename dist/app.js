@@ -49,6 +49,7 @@ const CONTACT_ROLES = [
 
 const SORT_MODES = ['priority', 'department', 'time-asc', 'time-desc'];
 const ADD_BUTTON_POSITIONS = ['floating', 'inline'];
+const APP_VIEWS = ['today', 'inbox', 'directions', 'contacts', 'history', 'settings'];
 const DOCUMENT_STATUSES = ['taken', 'not_required'];
 const DEFAULT_WAIT_THRESHOLDS = { warningMinutes:60, criticalMinutes:120 };
 const UNDO_TIMEOUT = 5000;
@@ -102,7 +103,8 @@ const seed = {
 };
 
 let state = load();
-let view = 'today';
+let uiState = loadUiState();
+let view = APP_VIEWS.includes(uiState.view) ? uiState.view : 'today';
 let direction = 'all';
 let departmentFilter = 'all';
 let blockFilter = 'all';
@@ -134,18 +136,24 @@ let teamLiveHeartbeat = null;
 let teamLiveReconnect = null;
 let teamNotice = null;
 let teamNoticeTimer = null;
+let teamNoticeImportant = false;
+let teamNoticeTarget = '';
 let teamIgnoreRealtimeUntil = 0;
 let teamPendingRemote = false;
-let uiState = loadUiState();
+let authBusy = false;
+let appHydrating = Boolean(cloud.session?.user?.id && team.shiftId && navigator.onLine);
+if (view === 'inbox' && !activeTeamShift()) view = 'today';
+if (appHydrating) cloud.status = 'syncing';
 
 function loadUiState() {
   try {
     const value=JSON.parse(localStorage.getItem(UI_STORAGE_KEY))||{};
     return {
       fabCollapsed:Boolean(value.fabCollapsed),
-      notificationLevel:['important','all','off'].includes(value.notificationLevel)?value.notificationLevel:'important'
+      notificationLevel:['important','all','off'].includes(value.notificationLevel)?value.notificationLevel:'important',
+      view:APP_VIEWS.includes(value.view)?value.view:'today'
     };
-  } catch { return {fabCollapsed:false,notificationLevel:'important'}; }
+  } catch { return {fabCollapsed:false,notificationLevel:'important',view:'today'}; }
 }
 function storeUiState(next={}) {
   uiState={...uiState,...next};
@@ -155,12 +163,12 @@ function storeUiState(next={}) {
 function loadTeamSession() {
   try {
     const value=JSON.parse(localStorage.getItem(TEAM_STORAGE_KEY))||{};
-    return {shiftId:String(value.shiftId||''),title:String(value.title||''),role:String(value.role||''),displayName:String(value.displayName||''),remoteVersion:String(value.remoteVersion||''),lastLocalAt:Number(value.lastLocalAt)||0,members:Array.isArray(value.members)?value.members:[],pendingReleases:Array.isArray(value.pendingReleases)?value.pendingReleases:[],invite:null,loading:false,error:'',liveStatus:'connecting'};
-  } catch { return {shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null,loading:false,error:'',liveStatus:'off'}; }
+    return {shiftId:String(value.shiftId||''),title:String(value.title||''),role:String(value.role||''),displayName:String(value.displayName||''),remoteVersion:String(value.remoteVersion||''),lastLocalAt:Number(value.lastLocalAt)||0,lastSyncedAt:Number(value.lastSyncedAt)||0,members:Array.isArray(value.members)?value.members:[],pendingReleases:Array.isArray(value.pendingReleases)?value.pendingReleases:[],invite:null,loading:false,error:'',liveStatus:'connecting'};
+  } catch { return {shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,lastSyncedAt:0,members:[],pendingReleases:[],invite:null,loading:false,error:'',liveStatus:'off'}; }
 }
 function storeTeamSession(next={}) {
   team={...team,...next};
-  const persisted={shiftId:team.shiftId,title:team.title,role:team.role,displayName:team.displayName,remoteVersion:team.remoteVersion,lastLocalAt:team.lastLocalAt,members:team.members,pendingReleases:team.pendingReleases};
+  const persisted={shiftId:team.shiftId,title:team.title,role:team.role,displayName:team.displayName,remoteVersion:team.remoteVersion,lastLocalAt:team.lastLocalAt,lastSyncedAt:team.lastSyncedAt,members:team.members,pendingReleases:team.pendingReleases};
   if(team.shiftId) localStorage.setItem(TEAM_STORAGE_KEY,JSON.stringify(persisted)); else localStorage.removeItem(TEAM_STORAGE_KEY);
 }
 function activeTeamShift() { return Boolean(team.shiftId&&cloud.session?.user?.id); }
@@ -218,18 +226,22 @@ async function showSystemNotification(message) {
 function teamChangeSummary(localState,remoteState) {
   const localIncoming=new Set((localState?.incoming||[]).filter(item=>item.inboxStatus==='pending').map(item=>item.id));
   const added=(remoteState?.incoming||[]).filter(item=>item.inboxStatus==='pending'&&!localIncoming.has(item.id));
-  if(added.some(item=>item.priority==='urgent'||currentStep(item)?.urgent)) return {message:'Новое срочное поручение',important:true};
-  if(added.length) return {message:`Новых поручений: ${added.length}`,important:true};
+  if(added.some(item=>item.priority==='urgent'||currentStep(item)?.urgent)) return {message:'Срочное поручение — открой «Новое»',important:true,target:'inbox'};
+  const timed=added.filter(item=>/^([01]\d|2[0-3]):[0-5]\d$/.test(String(currentStep(item)?.time||'')));
+  if(timed.length) return {message:timed.length===1?`Поручение ко времени ${currentStep(timed[0]).time} — проверь «Новое»`:`Поручений ко времени: ${timed.length} — проверь «Новое»`,important:true,target:'inbox'};
+  if(added.length) return {message:added.length===1?'Новое поручение в разделе «Новое»':`Новых поручений: ${added.length}`,important:false,target:'inbox'};
   const ownId=cloud.session?.user?.id||'';
   const localPatients=new Map((localState?.patients||[]).map(item=>[item.id,item]));
   const assigned=(remoteState?.patients||[]).filter(item=>item.assignedTo===ownId&&localPatients.get(item.id)?.assignedTo!==ownId);
-  if(assigned.length) return {message:'Вам передан пациент',important:true};
-  return {message:'Общая смена обновлена',important:false};
+  if(assigned.length) return {message:'Вам передан пациент',important:true,target:'today'};
+  return {message:'Общая смена обновлена',important:false,target:''};
 }
-function showTeamNotice(message='Общая смена обновлена', important=false) {
+function showTeamNotice(message='Общая смена обновлена', important=false, target='') {
   teamNotice=message;
+  teamNoticeImportant=important;
+  teamNoticeTarget=target;
   if(teamNoticeTimer) clearTimeout(teamNoticeTimer);
-  teamNoticeTimer=setTimeout(()=>{teamNotice=null;teamNoticeTimer=null;if(!modal)render(true);},5000);
+  teamNoticeTimer=setTimeout(()=>{teamNotice=null;teamNoticeImportant=false;teamNoticeTarget='';teamNoticeTimer=null;if(!modal)render(true);},5000);
   const level=uiState.notificationLevel;
   if(document.hidden&&level!=='off'&&(level==='all'||important)) showSystemNotification(message);
 }
@@ -384,7 +396,7 @@ async function fetchTeamMembers() {
 async function discoverTeamShift() {
   if(!cloud.session?.user?.id) return false;
   if(team.shiftId) {
-    try { await fetchTeamMembers(); return true; }
+    try { await fetchTeamMembers(); return {found:true,newlyLinked:false}; }
     catch { storeTeamSession({shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[]}); }
   }
   const rows=await cloudRequest(`/rest/v1/medflow_shift_members?select=shift_id,user_id,display_name,role,joined_at,last_seen_at&user_id=eq.${encodeURIComponent(cloud.session.user.id)}&order=joined_at.desc&limit=1`);
@@ -392,7 +404,7 @@ async function discoverTeamShift() {
   const member=rows[0];
   storeTeamSession({shiftId:member.shift_id,role:member.role,displayName:member.display_name,remoteVersion:'',lastLocalAt:0,members:[member]});
   await fetchTeamMembers();
-  return true;
+  return {found:true,newlyLinked:true};
 }
 async function createTeamShift(title,displayName) {
   const shiftId=await teamRpc('medflow_create_shift',{shift_title:title,member_name:displayName,initial_payload:state});
@@ -415,7 +427,7 @@ async function leaveTeamShift() {
   if(!activeTeamShift()) return;
   if(teamRole()==='owner') await cloudRequest(`/rest/v1/medflow_shifts?id=eq.${encodeURIComponent(team.shiftId)}`,{method:'DELETE'});
   else await cloudRequest(`/rest/v1/medflow_shift_members?shift_id=eq.${encodeURIComponent(team.shiftId)}&user_id=eq.${encodeURIComponent(cloud.session.user.id)}`,{method:'DELETE'});
-  storeTeamSession({shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,members:[],pendingReleases:[],invite:null});
+  storeTeamSession({shiftId:'',title:'',role:'',displayName:'',remoteVersion:'',lastLocalAt:0,lastSyncedAt:0,members:[],pendingReleases:[],invite:null});
   disconnectTeamRealtime();
   state.settings.workMode='solo'; save();
 }
@@ -425,7 +437,7 @@ async function pushSharedShift(expectedVersion=team.remoteVersion) {
   const result=await teamRpc('medflow_update_shift',{target_shift:team.shiftId,expected_updated_at:expectedVersion||null,next_payload:state});
   if(!result?.ok) return result||{ok:false};
   const syncedAt=Date.now();
-  storeTeamSession({remoteVersion:result.updated_at||expectedVersion,lastLocalAt:localUpdatedAt,title:result.title||team.title});
+  storeTeamSession({remoteVersion:result.updated_at||expectedVersion,lastLocalAt:localUpdatedAt,lastSyncedAt:syncedAt,title:result.title||team.title});
   cloud.lastSyncedAt=syncedAt; cloud.status='synced'; cloud.message='Общая смена сохранена'; clearCloudRetry();
   return result;
 }
@@ -445,8 +457,9 @@ async function syncSharedShift({preferRemote=false}={}) {
     if(preferRemote||(!localDirty&&(remoteChanged||!team.remoteVersion))) {
       state=normalizeState(clone(remote.payload)); state.settings.workMode='team';
       localStorage.setItem(STORAGE_KEY,JSON.stringify(state)); localUpdatedAt=Date.now(); localStorage.setItem(SYNC_META_KEY,String(localUpdatedAt));
-      storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,title:remote.title||team.title});
-      cloud.lastSyncedAt=Date.now(); cloud.status='synced'; cloud.message='Общая смена обновлена';
+      const syncedAt=Date.now();
+      storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,lastSyncedAt:syncedAt,title:remote.title||team.title});
+      cloud.lastSyncedAt=syncedAt; cloud.status='synced'; cloud.message='Общая смена обновлена';
     } else if(localDirty) {
       let expected=remote.updated_at;
       if(remoteChanged||!team.remoteVersion) {
@@ -463,14 +476,15 @@ async function syncSharedShift({preferRemote=false}={}) {
         if(attempt===2) throw new Error('Смена быстро меняется на другом устройстве. Повторим автоматически');
       }
     } else {
-      storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,title:remote.title||team.title});
-      cloud.lastSyncedAt=Date.now();cloud.status='synced';cloud.message='';
+      const syncedAt=Date.now();
+      storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,lastSyncedAt:syncedAt,title:remote.title||team.title});
+      cloud.lastSyncedAt=syncedAt;cloud.status='synced';cloud.message='';
     }
-    if(changeSummary) showTeamNotice(changeSummary.message,changeSummary.important);
+    if(changeSummary) showTeamNotice(changeSummary.message,changeSummary.important,changeSummary.target);
     teamPendingRemote=false;
     await fetchTeamMembers(); clearCloudRetry();
   } catch(error) { cloud.status='error';cloud.message=error.message||'Не удалось синхронизировать общую смену';scheduleCloudRetry(); }
-  finally {cloud.syncing=false;if(!modal)render(true);}
+  finally {appHydrating=false;cloud.syncing=false;if(!modal)render(true);}
 }
 async function pushCloudState() {
   if(activeTeamShift()) return pushSharedShift();
@@ -560,16 +574,16 @@ async function signInCloud(email,password) {
   const session = await cloudRequest('/auth/v1/token?grant_type=password', { method:'POST', body:JSON.stringify({email,password}) }, false);
   storeCloudSession(session);
   cloud.message = 'Вход выполнен';
-  await discoverTeamShift();
-  await syncCloudState();
+  const discovery=await discoverTeamShift();
+  if(discovery?.newlyLinked) await syncSharedShift({preferRemote:true}); else await syncCloudState();
 }
 async function signUpCloud(email,password) {
   const result = await cloudRequest(`/auth/v1/signup?redirect_to=${encodeURIComponent(authRedirectUrl())}`, { method:'POST', body:JSON.stringify({email,password}) }, false);
   if (result?.access_token) {
     storeCloudSession(result);
     cloud.message = 'Аккаунт создан';
-    await discoverTeamShift();
-    await syncCloudState();
+    const discovery=await discoverTeamShift();
+    if(discovery?.newlyLinked) await syncSharedShift({preferRemote:true}); else await syncCloudState();
     return {confirmed:true,email};
   } else {
     cloud.message = 'Проверь почту и подтверди регистрацию, затем войди';
@@ -1175,6 +1189,8 @@ function restoreModalDraft() {
 }
 
 function render(preservePosition=false) {
+  if (view === 'inbox' && !activeTeamShift()) view = 'today';
+  if (uiState.view !== view) storeUiState({view});
   captureModalDraft();
   const position = preservePosition ? captureViewPosition() : null;
   const active = sortPatients(state.patients.filter(p => !isComplete(p)));
@@ -1182,10 +1198,10 @@ function render(preservePosition=false) {
   document.getElementById('app').innerHTML = `
     <main class="shell ${state.settings.travelMode?'travel-mode':''} ${workMode()}-mode">
       ${topbarView()}
-      ${view === 'directions' ? sortControl() : ''}
-      ${view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
+      ${!appHydrating && view === 'directions' ? sortControl() : ''}
+      ${appHydrating && activeTeamShift() ? sharedShiftLoadingView() : view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
     </main>
-    ${floatingAddView()}
+    ${appHydrating ? '' : floatingAddView()}
     <nav class="nav ${workMode()}-nav">
       ${navButton('today','⌂','Сегодня')}
       ${workMode()==='team'?navButton('inbox','＋','Новое',pendingIncoming().length):''}
@@ -1203,11 +1219,19 @@ function render(preservePosition=false) {
   restoreViewPosition(position);
 }
 
+function sharedShiftLoadingView() {
+  return `<section class="shared-shift-loading" role="status" aria-live="polite">
+    <i class="loading-spinner" aria-hidden="true"></i>
+    <h2>Загружаем общую смену</h2>
+    <p>Получаем актуальные поручения команды. Локальная копия останется доступна без сети.</p>
+  </section>`;
+}
+
 function undoView() {
   return undoEntry ? `<div class="undo-toast" role="status"><span>${esc(undoEntry.label)}</span><button data-action="undo-last">Отменить</button></div>` : '';
 }
 function teamNoticeView() {
-  return teamNotice ? `<button class="team-notice" data-action="team-notice-open" role="status"><span>${esc(teamNotice)}</span><b>Обновить</b></button>` : '';
+  return teamNotice ? `<button class="team-notice ${teamNoticeImportant?'important':''}" data-action="team-notice-open" role="status"><span>${esc(teamNotice)}</span><b>${teamNoticeTarget?'Открыть':'Понятно'}</b></button>` : '';
 }
 
 function navButton(id, icon, text, count=0) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}${count?`<i class="nav-count">${count>99?'99+':count}</i>`:''}</button>`; }
@@ -1248,7 +1272,7 @@ function topbarView() {
 function syncPillView() {
   const status=!navigator.onLine?'offline':!cloud.session?'local':cloud.status;
   const labels={local:'Локально',synced:'Сохранено',syncing:'Синхронизация',pending:'Ожидает',offline:'Офлайн',error:'Ошибка',conflict:'Конфликт'};
-  const savedAt=cloud.lastSyncedAt||localUpdatedAt;
+  const savedAt=activeTeamShift() ? (team.lastSyncedAt||0) : (cloud.lastSyncedAt||localUpdatedAt);
   const time=savedAt ? ` · ${fmtClock(savedAt)}` : '';
   return `<button class="sync-pill ${esc(status)}" data-action="cloud-status" title="${esc(cloud.message||cloudStatusLabel())}"><i aria-hidden="true"></i><span>${labels[status]||'Облако'}${time}</span></button>`;
 }
@@ -1270,6 +1294,7 @@ function todayView(active, completed) {
   const queuedPatients = visibleActive.filter(p => !engagedPatients.includes(p));
   const engaged = engagedPatients.length;
   return `
+    ${activeTeamShift()&&notificationPermission()==='default'?`<aside class="notification-permission"><span><b>Уведомления команды выключены</b><small>Разреши их, чтобы не пропустить срочное поручение или задачу ко времени.</small></span><button data-action="notifications-enable">Включить</button></aside>`:''}
     ${pendingIncoming().length?`<button class="inbox-banner" data-view="inbox"><span><b>${pendingIncoming().length}</b><i>Новые поручения</i></span><strong>Посмотреть →</strong></button>`:''}
     ${activeSearchView()}
     ${departmentFiltersView(true)}
@@ -1687,11 +1712,11 @@ function modalView() {
         <button type="button" role="tab" aria-selected="${!isSignup}" class="${!isSignup?'active':''}" data-action="cloud-auth-mode" data-mode="signin">Вход</button>
         <button type="button" role="tab" aria-selected="${isSignup}" class="${isSignup?'active':''}" data-action="cloud-auth-mode" data-mode="signup">Регистрация</button>
       </div>`:''}
-      <form id="cloud-auth-form" class="auth-form">
-        <label class="auth-field"><span>Email</span><input name="email" type="email" inputmode="email" autocomplete="email" required placeholder="name@example.com"></label>
-        ${!isRecover?`<label class="auth-field"><span>Пароль</span><div class="password-field"><input id="cloud-password" name="password" type="password" autocomplete="${isSignup?'new-password':'current-password'}" required minlength="8" placeholder="Минимум 8 символов"><button type="button" data-action="cloud-password-toggle" aria-label="Показать пароль">Показать</button></div></label>`:''}
+      <form id="cloud-auth-form" class="auth-form" aria-busy="${authBusy}">
+        <label class="auth-field"><span>Email</span><input name="email" type="email" inputmode="email" autocomplete="email" required placeholder="name@example.com" ${authBusy?'disabled':''}></label>
+        ${!isRecover?`<label class="auth-field"><span>Пароль</span><div class="password-field"><input id="cloud-password" name="password" type="password" autocomplete="${isSignup?'new-password':'current-password'}" required minlength="8" placeholder="Минимум 8 символов" ${authBusy?'disabled':''}><button type="button" data-action="cloud-password-toggle" aria-label="Показать пароль" ${authBusy?'disabled':''}>Показать</button></div></label>`:''}
         ${modal.error?`<p class="form-error auth-error" role="alert">${esc(modal.error)}</p>`:''}
-        <button type="submit" class="primary-btn auth-submit" data-action="${isRecover?'cloud-recover':isSignup?'cloud-signup':'cloud-signin'}">${isRecover?'Отправить ссылку':isSignup?'Создать аккаунт':'Войти'}</button>
+        <button type="submit" class="primary-btn auth-submit ${authBusy?'loading':''}" data-action="${isRecover?'cloud-recover':isSignup?'cloud-signup':'cloud-signin'}" ${authBusy?'disabled':''}>${authBusy?`<i class="button-spinner" aria-hidden="true"></i>${isRecover?'Отправляем…':isSignup?'Создаём аккаунт…':'Входим…'}`:isRecover?'Отправить ссылку':isSignup?'Создать аккаунт':'Войти'}</button>
       </form>
       ${!isSignup&&!isRecover?'<button type="button" class="auth-recover" data-action="cloud-auth-mode" data-mode="recover">Забыл пароль</button>':''}
       ${isRecover?'<button type="button" class="auth-recover" data-action="cloud-auth-mode" data-mode="signin">Вернуться ко входу</button>':''}
@@ -1956,7 +1981,7 @@ function bindFloatingAddGesture() {
 }
 
 function bind() {
-  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;modal=null;searchOpen=false;render();});
+  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{view=el.dataset.view;storeUiState({view});modal=null;searchOpen=false;render();});
   document.querySelectorAll('[data-direction]').forEach(el=>el.onclick=()=>{direction=el.dataset.direction; render(true);});
   document.querySelectorAll('[data-scroll-direction]').forEach(el=>el.onclick=()=>{
     const group=document.querySelector(`[data-direction-group="${CSS.escape(el.dataset.scrollDirection)}"]`);
@@ -2135,7 +2160,13 @@ async function handleAction(action, el, e) {
     if(!undoEntry)return;
     const snapshot=undoEntry.state; clearUndo(); state=normalizeState(clone(snapshot)); modal=null; save(); return render(true);
   }
-  if (action==='team-notice-open') { teamNotice=null; await syncCloudState(); return render(true); }
+  if (action==='team-notice-open') {
+    const target=teamNoticeTarget;
+    teamNotice=null;teamNoticeImportant=false;teamNoticeTarget='';
+    await syncCloudState();
+    if(target&&APP_VIEWS.includes(target)){view=target;storeUiState({view});}
+    return render(true);
+  }
   if (action==='notifications-enable') {
     if(!('Notification' in globalThis)){cloud.message='Уведомления не поддерживаются этим браузером';return render(true);}
     const permission=await Notification.requestPermission();
@@ -2224,15 +2255,15 @@ async function handleAction(action, el, e) {
     state.contacts=state.contacts.filter(item=>item.id!==contact.id); modal=null; save(); return render(true);
   }
   if (action==='close') {
-    modal=null; render(true);
+    authBusy=false; modal=null; render(true);
     if(cloud.session) setTimeout(()=>syncCloudState(),0);
     return;
   }
   if (action==='cloud-status') { view='settings'; return render(); }
-  if (action==='cloud-auth') { cloud.message=''; modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
+  if (action==='cloud-auth') { authBusy=false; cloud.message=''; modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
   if (action==='auth-result-signin') { modal={type:'cloud-auth',authMode:'signin',error:''}; return render(); }
-  if (action==='auth-result-continue') { modal=null; view='today'; await discoverTeamShift(); await syncCloudState(); return render(true); }
-  if (action==='cloud-auth-mode') { modal.authMode=['signup','recover'].includes(el.dataset.mode)?el.dataset.mode:'signin'; modal.error=''; return render(); }
+  if (action==='auth-result-continue') { modal=null; view='today'; const discovery=await discoverTeamShift(); if(discovery?.newlyLinked)await syncSharedShift({preferRemote:true});else await syncCloudState(); return render(true); }
+  if (action==='cloud-auth-mode') { if(authBusy)return; modal.authMode=['signup','recover'].includes(el.dataset.mode)?el.dataset.mode:'signin'; modal.error=''; return render(); }
   if (action==='cloud-password-toggle') {
     const input=document.getElementById('cloud-password');
     if(!input) return;
@@ -2240,28 +2271,32 @@ async function handleAction(action, el, e) {
   }
   if (action==='cloud-signin' || action==='cloud-signup') {
     e?.preventDefault();
+    if(authBusy)return;
     const form=document.getElementById('cloud-auth-form');
     if(!form?.reportValidity()) return;
     const fd=new FormData(form), email=String(fd.get('email')||'').trim(), password=String(fd.get('password')||'');
-    modal.error='';
+    modal.error='';authBusy=true;render(true);
     try {
       if(action==='cloud-signin') {
-        await signInCloud(email,password); modal=null; view='settings'; return render();
+        await signInCloud(email,password); authBusy=false;modal=null; view='settings'; return render();
       }
       const result=await signUpCloud(email,password);
+      authBusy=false;
       if(result.confirmed) { modal={type:'auth-confirmed',email}; return render(); }
       modal={type:'auth-check-email',email}; return render();
     } catch(error) {
+      authBusy=false;
       modal.error=authErrorMessage(error);
       return render();
     }
   }
   if (action==='cloud-recover') {
     e?.preventDefault();
+    if(authBusy)return;
     const form=document.getElementById('cloud-auth-form'); if(!form?.reportValidity())return;
-    const email=String(new FormData(form).get('email')||'').trim(); modal.error='';
-    try { await requestPasswordReset(email); cloud.message='Ссылка для восстановления отправлена на почту'; modal=null; view='settings'; return render(); }
-    catch(error) { modal.error=authErrorMessage(error); return render(); }
+    const email=String(new FormData(form).get('email')||'').trim(); modal.error='';authBusy=true;render(true);
+    try { await requestPasswordReset(email); authBusy=false;cloud.message='Ссылка для восстановления отправлена на почту'; modal=null; view='settings'; return render(); }
+    catch(error) { authBusy=false;modal.error=authErrorMessage(error); return render(); }
   }
   if (action==='cloud-password-update') {
     e?.preventDefault();
@@ -2644,6 +2679,14 @@ document.addEventListener?.('visibilitychange',()=>{
   if(!document.hidden&&activeTeamShift()&&navigator.onLine){connectTeamRealtime();syncSharedShift();}
 });
 render();
-handleAuthRedirect().then(async()=>{ if(cloud.session && modal?.type!=='password-update') { await discoverTeamShift(); setTimeout(()=>syncCloudState(),0); } }).catch(error=>{
-  cloud.message=authErrorMessage(error); if(cloud.session) setTimeout(()=>syncCloudState(),0); if(view==='settings')render(true);
+handleAuthRedirect().then(async()=>{
+  if(cloud.session && modal?.type!=='password-update') {
+    const discovery=await discoverTeamShift();
+    if(activeTeamShift()) {
+      appHydrating=true; cloud.status='syncing'; render(true);
+      await syncSharedShift({preferRemote:Boolean(discovery?.newlyLinked)});
+    } else await syncCloudState();
+  }
+}).catch(error=>{
+  appHydrating=false; cloud.message=authErrorMessage(error); if(cloud.session) setTimeout(()=>syncCloudState(),0); render(true);
 });

@@ -545,7 +545,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v51"));
+  assert.ok(sw.includes("medflow-shell-v52"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
@@ -592,7 +592,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('RETRY_DELAYS = [5000, 15000, 30000]'));
   assert.ok(source.includes("modal={type:'sync-conflict'"));
   assert.ok(source.includes('data-action="sync-conflict-merge"'));
-  assert.ok(source.includes("finally {cloud.syncing=false;if(!modal)render(true);}"));
+  assert.ok(source.includes("finally {appHydrating=false;cloud.syncing=false;if(!modal)render(true);}"));
   assert.ok(source.includes('data-action="export-backup"'));
   assert.ok(source.includes('data-action="import-backup"'));
   assert.ok(source.includes('/auth/v1/recover'));
@@ -648,6 +648,10 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes("data-action=\"fab-expand\""));
   assert.ok(source.includes('showSystemNotification'));
   assert.ok(source.includes('data-notification-level'));
+  assert.ok(source.includes("storeUiState({view})"));
+  assert.ok(source.includes('sharedShiftLoadingView()'));
+  assert.ok(source.includes("activeTeamShift() ? (team.lastSyncedAt||0)"));
+  assert.ok(source.includes("authBusy=true;render(true)"));
   assert.ok(fs.readFileSync(path.join(__dirname,'..','dist','styles.css'),'utf8').includes('.patient-card.operation-today:not(.urgent)'));
   assert.ok(!source.includes('<option value="gxo"'));
   assert.ok(!source.includes('<option value="xo"'));
@@ -693,8 +697,21 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const local={patients:[],incoming:[]};
   const remote={patients:[],incoming:[{id:'urgent-new',inboxStatus:'pending',priority:'urgent',steps:[step('КТ','active','ct')]}]};
   const summary=api.teamChangeSummary(local,remote);
-  assert.equal(summary.message,'Новое срочное поручение');
+  assert.equal(summary.message,'Срочное поручение — открой «Новое»');
   assert.equal(summary.important,true);
+  assert.equal(summary.target,'inbox');
+}
+
+{
+  const local={patients:[],incoming:[]};
+  const timed={patients:[],incoming:[{id:'timed-new',inboxStatus:'pending',priority:'normal',steps:[{...step('УЗИ','active','ultrasound'),time:'14:30'}]}]};
+  const ordinary={patients:[],incoming:[{id:'ordinary-new',inboxStatus:'pending',priority:'normal',steps:[step('ЭКГ','active','ecg')]}]};
+  const timedSummary=api.teamChangeSummary(local,timed);
+  const ordinarySummary=api.teamChangeSummary(local,ordinary);
+  assert.equal(timedSummary.important,true);
+  assert.ok(timedSummary.message.includes('14:30'));
+  assert.equal(ordinarySummary.important,false);
+  assert.equal(ordinarySummary.target,'inbox');
 }
 
 {
