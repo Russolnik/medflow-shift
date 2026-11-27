@@ -1159,7 +1159,7 @@ function render(preservePosition=false) {
       ${view === 'today' ? todayView(active, completed) : view === 'inbox' ? inboxView() : view === 'directions' ? directionsView() : view === 'contacts' ? contactsView() : view === 'history' ? historyView() : settingsView()}
     </main>
     ${floatingAddView()}
-    <nav class="nav">
+    <nav class="nav ${workMode()}-nav">
       ${navButton('today','⌂','Сегодня')}
       ${workMode()==='team'?navButton('inbox','＋','Новое',pendingIncoming().length):''}
       ${navButton('directions','⌘','Направления')}

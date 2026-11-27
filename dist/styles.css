@@ -265,6 +265,8 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .toggle-chevron { width:8px; height:8px; border-right:1.5px solid var(--muted); border-bottom:1.5px solid var(--muted); transform:rotate(45deg); transition:transform .18s ease, margin .18s ease; margin-top:-4px; }
 .toggle-chevron.open { transform:rotate(225deg); margin-top:4px; }
 .nav { position:fixed; z-index:20; left:50%; bottom:max(12px,env(safe-area-inset-bottom)); transform:translateX(-50%); width:min(calc(100% - 24px),696px); display:grid; grid-template-columns:repeat(4,1fr); gap:3px; padding:7px; border-radius:18px; background:rgba(10,13,17,.93); backdrop-filter:blur(22px); border:1px solid rgba(222,232,235,.10); box-shadow:var(--shadow); }
+.nav.solo-nav { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.nav.team-nav { grid-template-columns:repeat(4,minmax(0,1fr)); }
 .nav-btn { position:relative; min-width:0; background:transparent; color:var(--muted); min-height:52px; border-radius:14px; font-size:9px; font-weight:800; white-space:nowrap; }
 .nav-btn b { display:block; font-size:18px; margin-bottom:2px; }
 .nav-btn.active { color:#e0e6e6; background:rgba(255,255,255,.035); text-shadow:none; }
