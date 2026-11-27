@@ -7,6 +7,8 @@ const UI_STORAGE_KEY = 'medflow-ui-v1';
 const RETRY_DELAYS = [5000, 15000, 30000];
 const TEAM_POLL_INTERVAL = 3000;
 const TEAM_LIVE_RECONNECT = 4000;
+const NOTIFICATION_LEAD_OPTIONS = [30, 20, 10, 5, 0];
+const NOTIFICATION_LOG_KEY = 'medflow-notification-log-v1';
 const SUPABASE_URL = 'https://lzntgijkwzrptvkgetyx.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_VwHAjChFPXOxMVpomhYwCw_JjfL7ryV';
 const AUTH_REDIRECT_ORIGINS = new Set(['https://russolnik.github.io','https://medflow-shift.onrender.com']);
@@ -142,18 +144,24 @@ let teamIgnoreRealtimeUntil = 0;
 let teamPendingRemote = false;
 let authBusy = false;
 let appHydrating = Boolean(cloud.session?.user?.id && team.shiftId && navigator.onLine);
+let notificationCheckBusy = false;
+let notificationLog = loadNotificationLog();
 if (view === 'inbox' && !activeTeamShift()) view = 'today';
 if (appHydrating) cloud.status = 'syncing';
 
 function loadUiState() {
   try {
     const value=JSON.parse(localStorage.getItem(UI_STORAGE_KEY))||{};
+    const notificationConfigVersion=Number(value.notificationConfigVersion)||0;
+    const leadTimes=Array.isArray(value.notificationLeadTimes)?value.notificationLeadTimes.map(Number).filter(item=>NOTIFICATION_LEAD_OPTIONS.includes(item)):NOTIFICATION_LEAD_OPTIONS;
     return {
       fabCollapsed:Boolean(value.fabCollapsed),
-      notificationLevel:['important','all','off'].includes(value.notificationLevel)?value.notificationLevel:'important',
+      notificationLevel:notificationConfigVersion>=1&&['important','all','off'].includes(value.notificationLevel)?value.notificationLevel:'all',
+      notificationLeadTimes:[...new Set(leadTimes)].sort((a,b)=>b-a),
+      notificationConfigVersion:1,
       view:APP_VIEWS.includes(value.view)?value.view:'today'
     };
-  } catch { return {fabCollapsed:false,notificationLevel:'important',view:'today'}; }
+  } catch { return {fabCollapsed:false,notificationLevel:'all',notificationLeadTimes:[...NOTIFICATION_LEAD_OPTIONS],notificationConfigVersion:1,view:'today'}; }
 }
 function storeUiState(next={}) {
   uiState={...uiState,...next};
@@ -201,27 +209,103 @@ async function flushTeamReleases() {
   storeTeamSession({pendingReleases:remaining});
 }
 
-function notificationOptions(message) {
+function notificationOptions(message, tag='team-update') {
   return {
     body:message,
-    tag:`medflow-team-${team.shiftId||'shift'}`,
+    tag:`medflow-${team.shiftId||'shift'}-${tag}`,
     renotify:true,
     silent:false,
     icon:'./icon.svg',
     data:{url:location.href}
   };
 }
-async function showSystemNotification(message) {
+async function showSystemNotification(message, tag='team-update') {
   if(notificationPermission()!=='granted')return false;
   try {
     if(navigator.serviceWorker?.ready) {
       const registration=await navigator.serviceWorker.ready;
-      await registration.showNotification('MedFlow',notificationOptions(message));
+      await registration.showNotification('MedFlow',notificationOptions(message,tag));
       return true;
     }
-    new Notification('MedFlow',notificationOptions(message));
+    new Notification('MedFlow',notificationOptions(message,tag));
     return true;
   } catch { return false; }
+}
+function loadNotificationLog() {
+  try {
+    const value=JSON.parse(localStorage.getItem(NOTIFICATION_LOG_KEY))||{};
+    const cutoff=Date.now()-36*60*60*1000;
+    return Object.fromEntries(Object.entries(value).filter(([,at])=>Number(at)>=cutoff));
+  } catch { return {}; }
+}
+function storeNotificationLog() {
+  const cutoff=Date.now()-36*60*60*1000;
+  notificationLog=Object.fromEntries(Object.entries(notificationLog).filter(([,at])=>Number(at)>=cutoff));
+  localStorage.setItem(NOTIFICATION_LOG_KEY,JSON.stringify(notificationLog));
+}
+function notificationDayKey(now=Date.now()) {
+  const date=new Date(now);
+  return `${date.getFullYear()}-${date.getMonth()+1}-${date.getDate()}`;
+}
+function reminderKey(patient,step,lead,now=Date.now()) {
+  return `${team.shiftId||'solo'}:${notificationDayKey(now)}:${patient.id}:${step.id}:${step.time}:${lead}`;
+}
+function timedNotificationCandidates(source=state,now=Date.now()) {
+  const selected=uiState.notificationLeadTimes||[];
+  if(!selected.length)return [];
+  const patients=[...(source.patients||[]),...(source.incoming||[]).filter(item=>item.inboxStatus==='pending')];
+  const candidates=[];
+  for(const patient of patients) for(const step of patient.steps||[]) {
+    if(isTerminalStep(step)||!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(step.time||'')))continue;
+    const [hours,minutes]=step.time.split(':').map(Number);
+    const target=new Date(now);target.setHours(hours,minutes,0,0);
+    const remainingMs=target.getTime()-now;
+    if(remainingMs < -60000)continue;
+    const remaining=Math.max(0,Math.ceil(remainingMs/60000));
+    const eligible=selected.filter(lead=>remaining<=lead&&!notificationLog[reminderKey(patient,step,lead,now)]);
+    if(!eligible.length)continue;
+    const lead=Math.min(...eligible);
+    candidates.push({patient,step,lead,remaining,at:target.getTime()});
+  }
+  return candidates.sort((a,b)=>a.at-b.at);
+}
+function markReminderThresholds(candidate,now=Date.now()) {
+  for(const lead of uiState.notificationLeadTimes||[]) {
+    if(lead>=candidate.lead)notificationLog[reminderKey(candidate.patient,candidate.step,lead,now)]=now;
+  }
+  storeNotificationLog();
+}
+function timedReminderMessage(candidate) {
+  const title=String(candidate.step.title||typeLabel(candidate.step.type)||'Поручение');
+  return candidate.remaining<=0?`Сейчас: ${title}`:`Через ${candidate.remaining} мин: ${title}`;
+}
+function markAddedTimedReminders(localState,remoteState,now=Date.now()) {
+  const localIds=new Set((localState?.incoming||[]).filter(item=>item.inboxStatus==='pending').map(item=>item.id));
+  const added=(remoteState?.incoming||[]).filter(item=>item.inboxStatus==='pending'&&!localIds.has(item.id));
+  for(const patient of added) {
+    const step=currentStep(patient);
+    if(!step||!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(step.time||'')))continue;
+    const [hours,minutes]=step.time.split(':').map(Number);
+    const target=new Date(now);target.setHours(hours,minutes,0,0);
+    const remaining=Math.max(0,Math.ceil((target.getTime()-now)/60000));
+    const eligible=(uiState.notificationLeadTimes||[]).filter(lead=>remaining<=lead);
+    if(eligible.length)markReminderThresholds({patient,step,lead:Math.min(...eligible)},now);
+  }
+}
+async function checkTimedReminders(now=Date.now()) {
+  if(notificationCheckBusy||uiState.notificationLevel==='off'||notificationPermission()!=='granted')return [];
+  notificationCheckBusy=true;
+  const sent=[];
+  try {
+    for(const candidate of timedNotificationCandidates(state,now)) {
+      const message=timedReminderMessage(candidate);
+      markReminderThresholds(candidate,now);
+      showTeamNotice(message,true,'today',false);
+      await showSystemNotification(message,`time-${candidate.step.id}-${candidate.lead}`);
+      sent.push(message);
+    }
+  } finally { notificationCheckBusy=false; }
+  return sent;
 }
 function teamChangeSummary(localState,remoteState) {
   const localIncoming=new Set((localState?.incoming||[]).filter(item=>item.inboxStatus==='pending').map(item=>item.id));
@@ -236,14 +320,14 @@ function teamChangeSummary(localState,remoteState) {
   if(assigned.length) return {message:'Вам передан пациент',important:true,target:'today'};
   return {message:'Общая смена обновлена',important:false,target:''};
 }
-function showTeamNotice(message='Общая смена обновлена', important=false, target='') {
+function showTeamNotice(message='Общая смена обновлена', important=false, target='', allowSystem=true) {
   teamNotice=message;
   teamNoticeImportant=important;
   teamNoticeTarget=target;
   if(teamNoticeTimer) clearTimeout(teamNoticeTimer);
   teamNoticeTimer=setTimeout(()=>{teamNotice=null;teamNoticeImportant=false;teamNoticeTarget='';teamNoticeTimer=null;if(!modal)render(true);},5000);
   const level=uiState.notificationLevel;
-  if(document.hidden&&level!=='off'&&(level==='all'||important)) showSystemNotification(message);
+  if(allowSystem&&document.hidden&&level!=='off'&&(level==='all'||important)) showSystemNotification(message);
 }
 function notificationPermission() {
   return 'Notification' in globalThis ? Notification.permission : 'unsupported';
@@ -293,7 +377,7 @@ function connectTeamRealtime() {
     if(record?.id&&record.id!==team.shiftId)return;
     if(Date.now()<teamIgnoreRealtimeUntil)return;
     teamPendingRemote=true;
-    showTeamNotice(hasOpenWorkForm()?'Изменения команды применятся после закрытия формы':'Появились изменения в общей смене');
+    if(hasOpenWorkForm())showTeamNotice('Изменения команды применятся после закрытия формы',false,'',false);
     await syncSharedShift();
     if(!modal)render(true);
   };
@@ -452,7 +536,8 @@ async function syncSharedShift({preferRemote=false}={}) {
     const rows=await cloudRequest(`/rest/v1/medflow_shifts?select=id,title,payload,updated_at,closed_at&id=eq.${encodeURIComponent(team.shiftId)}&limit=1`);
     const remote=rows?.[0]; if(!remote) throw new Error('Общая смена не найдена или доступ отозван');
     const remoteChanged=Boolean(team.remoteVersion&&remote.updated_at!==team.remoteVersion);
-    const changeSummary=remoteChanged?teamChangeSummary(state,remote.payload):null;
+    const localBeforeSync=state;
+    const changeSummary=remoteChanged?teamChangeSummary(localBeforeSync,remote.payload):null;
     const localDirty=localUpdatedAt>(team.lastLocalAt||0);
     if(preferRemote||(!localDirty&&(remoteChanged||!team.remoteVersion))) {
       state=normalizeState(clone(remote.payload)); state.settings.workMode='team';
@@ -480,7 +565,10 @@ async function syncSharedShift({preferRemote=false}={}) {
       storeTeamSession({remoteVersion:remote.updated_at,lastLocalAt:localUpdatedAt,lastSyncedAt:syncedAt,title:remote.title||team.title});
       cloud.lastSyncedAt=syncedAt;cloud.status='synced';cloud.message='';
     }
-    if(changeSummary) showTeamNotice(changeSummary.message,changeSummary.important,changeSummary.target);
+    if(changeSummary) {
+      markAddedTimedReminders(localBeforeSync,remote.payload);
+      showTeamNotice(changeSummary.message,changeSummary.important,changeSummary.target);
+    }
     teamPendingRemote=false;
     await fetchTeamMembers(); clearCloudRetry();
   } catch(error) { cloud.status='error';cloud.message=error.message||'Не удалось синхронизировать общую смену';scheduleCloudRetry(); }
@@ -1503,11 +1591,32 @@ function teamSettingsView() {
   if(!activeTeamShift()) return `<section class="settings-card team-settings-card"><div class="settings-card-head"><h2>Общая смена</h2><span>не подключена</span></div><p>Создай смену для своего отделения или введи код от владельца. Личные данные останутся отдельной копией.</p><div class="settings-actions"><button class="primary-btn" data-action="team-create-open">Создать смену</button><button class="secondary-btn" data-action="team-join-open">Ввести код</button></div></section>`;
   const actor=currentActor();
   const members=team.members.map(member=>`<div class="team-member"><div><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}${member.user_id===actor.id?' · это вы':''}</span></div>${canManageTeam()&&member.user_id!==actor.id?`<button class="secondary-btn" data-action="team-member-open" data-member="${esc(member.user_id)}">Права</button>`:''}</div>`).join('');
-  const permission=notificationPermission();
   const liveLabel=team.liveStatus==='live'?'онлайн':team.liveStatus==='reconnecting'?'переподключение':'не в эфире';
-  const notificationButton=permission==='granted'?'<button class="secondary-btn" data-action="notifications-test">Проверить уведомление</button>':permission==='unsupported'?'':'<button class="secondary-btn" data-action="notifications-enable">Разрешить уведомления</button>';
-  const notificationSettings=permission==='unsupported'?'':`<div class="notification-settings"><label><span>Что показывать на телефоне и часах</span><select data-notification-level><option value="important" ${uiState.notificationLevel==='important'?'selected':''}>Только важное</option><option value="all" ${uiState.notificationLevel==='all'?'selected':''}>Все изменения смены</option><option value="off" ${uiState.notificationLevel==='off'?'selected':''}>Не показывать</option></select></label><small>Без фамилии и диагноза: только «новое поручение», «срочно» или «вам передан пациент».</small></div>`;
-  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))} · ${liveLabel}</span></div><p>Очередь обновляется между участниками в реальном времени. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}${notificationSettings}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}${notificationButton}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
+  return `<section class="settings-card team-settings-card active"><div class="settings-card-head"><h2>${esc(team.title||'Общая смена')}</h2><span>${esc(roleLabel(teamRole()))} · ${liveLabel}</span></div><p>Очередь обновляется между участниками в реальном времени. Открытая форма не перезаписывается входящими изменениями.</p><div class="team-members">${members||'<div class="team-member"><span>Загружаем участников…</span></div>'}</div>${team.invite?`<div class="invite-code"><span>Одноразовый код · ${esc(roleLabel(team.invite.role))}</span><b>${esc(team.invite.code)}</b><button class="secondary-btn" data-action="team-copy-code" data-code="${esc(team.invite.code)}">Копировать</button></div>`:''}<div class="settings-actions">${canManageTeam()?'<button class="primary-btn" data-action="team-invite-open">Пригласить</button>':''}<button class="secondary-btn" data-action="team-refresh">Обновить</button><button class="danger-btn" data-action="team-leave-open">${canManageTeam()?'Закрыть смену':'Покинуть'}</button></div>${team.error?`<p class="cloud-message">${esc(team.error)}</p>`:''}</section>`;
+}
+
+function notificationSettingsView() {
+  const permission=notificationPermission();
+  const permissionLabel=permission==='granted'?'разрешены':permission==='denied'?'запрещены браузером':permission==='unsupported'?'не поддерживаются':'нужно разрешение';
+  const permissionButton=permission==='granted'?'<button class="secondary-btn" data-action="notifications-test">Проверить уведомление</button>':permission==='unsupported'?'':'<button class="primary-btn" data-action="notifications-enable">Разрешить уведомления</button>';
+  return `<section class="settings-card notification-card">
+    <div class="settings-card-head"><h2>Уведомления</h2><span>${permissionLabel}</span></div>
+    <p>Обычные новые поручения приходят без тревожной пометки. Срочные и назначенные по времени выделяются как важные.</p>
+    <div class="notification-settings">
+      <label><span>Какие поручения показывать</span><select data-notification-level>
+        <option value="all" ${uiState.notificationLevel==='all'?'selected':''}>Все новые поручения</option>
+        <option value="important" ${uiState.notificationLevel==='important'?'selected':''}>Только важные</option>
+        <option value="off" ${uiState.notificationLevel==='off'?'selected':''}>Выключить</option>
+      </select></label>
+      <small>Важные — срочные, назначенные по времени и переданные лично вам.</small>
+    </div>
+    <fieldset class="notification-leads" ${uiState.notificationLevel==='off'?'disabled':''}>
+      <legend>Напоминать до указанного времени</legend>
+      <div>${NOTIFICATION_LEAD_OPTIONS.map(lead=>`<label><input type="checkbox" data-notification-lead value="${lead}" ${(uiState.notificationLeadTimes||[]).includes(lead)?'checked':''}><span>${lead===0?'В момент начала':`За ${lead} мин`}</span></label>`).join('')}</div>
+      <small>Для поручений «без времени» отсчёт не создаётся — останется только уведомление о добавлении.</small>
+    </fieldset>
+    <div class="settings-actions">${permissionButton}</div>
+  </section>`;
 }
 
 function settingsView() {
@@ -1516,6 +1625,7 @@ function settingsView() {
   return `
     ${cloudSettingsView()}
     ${teamSettingsView()}
+    ${notificationSettingsView()}
     <section class="settings-card">
       <div class="settings-card-head"><h2>Отделения</h2><span>${getDepartments().length} в списке</span></div>
       <p>Наше отделение: <b>${esc(departmentLabel(ownDepartmentId()))}</b>. Оно выбирается по умолчанию для новых пациентов.</p>
@@ -2006,6 +2116,7 @@ function bind() {
   document.querySelectorAll('[data-time-none]').forEach(el=>{const update=()=>{const input=document.querySelector(`[data-time-input="${el.dataset.timeNone}"]`);if(input){input.disabled=el.checked;if(el.checked){input.value='';input.setCustomValidity('');}}};el.onchange=update;update();});
   document.querySelectorAll('[data-time-now]').forEach(el=>el.onclick=()=>{const name=el.dataset.timeNow,input=document.querySelector(`[data-time-input="${name}"]`),none=document.querySelector(`[data-time-none="${name}"]`);if(!input)return;if(none)none.checked=false;input.disabled=false;const now=new Date();input.value=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;input.setCustomValidity('');});
   document.querySelectorAll('[data-notification-level]').forEach(el=>el.onchange=()=>handleAction('notification-level',el));
+  document.querySelectorAll('[data-notification-lead]').forEach(el=>el.onchange=()=>handleAction('notification-lead',el));
   document.querySelectorAll('#quick-form,#patient-form').forEach(form=>{const update=()=>refreshOperationField(form);form.querySelectorAll('[name="type"],[name="extra-direction"]').forEach(el=>el.onchange=update);update();});
   focusPatientEditField();
   const routeTimeNone=document.getElementById('route-time-none');
@@ -2171,6 +2282,7 @@ async function handleAction(action, el, e) {
     if(!('Notification' in globalThis)){cloud.message='Уведомления не поддерживаются этим браузером';return render(true);}
     const permission=await Notification.requestPermission();
     cloud.message=permission==='granted'?'Уведомления общей смены включены':'Браузер не разрешил уведомления';
+    if(permission==='granted')setTimeout(()=>checkTimedReminders(),0);
     return render(true);
   }
   if (action==='notifications-test') {
@@ -2179,8 +2291,19 @@ async function handleAction(action, el, e) {
     return render(true);
   }
   if (action==='notification-level') {
-    storeUiState({notificationLevel:['important','all','off'].includes(el.value)?el.value:'important'});
+    storeUiState({notificationLevel:['important','all','off'].includes(el.value)?el.value:'all',notificationConfigVersion:1});
     cloud.message='Настройка уведомлений сохранена на этом устройстве';
+    if(uiState.notificationLevel!=='off')setTimeout(()=>checkTimedReminders(),0);
+    return render(true);
+  }
+  if (action==='notification-lead') {
+    const lead=Number(el.value);
+    if(!NOTIFICATION_LEAD_OPTIONS.includes(lead))return;
+    const selected=new Set(uiState.notificationLeadTimes||[]);
+    if(el.checked)selected.add(lead);else selected.delete(lead);
+    storeUiState({notificationLeadTimes:[...selected].sort((a,b)=>b-a),notificationConfigVersion:1});
+    cloud.message='Интервалы напоминаний сохранены на этом устройстве';
+    setTimeout(()=>checkTimedReminders(),0);
     return render(true);
   }
   if (action==='fab-expand') { storeUiState({fabCollapsed:false}); return render(true); }
@@ -2658,9 +2781,10 @@ globalThis.__MEDFLOW_TEST__={
   patientMatchesSearch,contactMatchesSearch,patientMissingFields,waitThresholds,undoView,
   normalizeTimeInput,formatTimeTyping,validateTimeInput,stepTimeLabel,patientCareFlags,directionPatientStatus,directionRegistryGroup,moreNavButton,workMode,entryTargetChoice,
   operationBlockRank,compareOperationBlocks,patientMatchesBlock,safeDisplayName,compactPatientCard,teamPatientCompactView,
-  floatingAddView,teamChangeSummary
+  floatingAddView,teamChangeSummary,timedNotificationCandidates,timedReminderMessage,markAddedTimedReminders,notificationSettingsView
 };
 setInterval(()=>{ if(!modal && document.querySelector('.timer')) render(true); },30000);
+setInterval(()=>{ if(!modal)checkTimedReminders(); },30000);
 setInterval(()=>{ if(!activeTeamShift()&&!modal&&cloud.session&&navigator.onLine&&!cloud.syncing) syncCloudState(); },20000);
 setInterval(()=>{ if(activeTeamShift()&&!modal&&navigator.onLine&&!cloud.syncing) syncSharedShift(); },TEAM_POLL_INTERVAL);
 window.addEventListener('online',()=>{
@@ -2676,7 +2800,10 @@ window.addEventListener('offline',()=>{
   if(!modal&&(view==='settings'||view==='today')) render(true);
 });
 document.addEventListener?.('visibilitychange',()=>{
-  if(!document.hidden&&activeTeamShift()&&navigator.onLine){connectTeamRealtime();syncSharedShift();}
+  if(!document.hidden){
+    if(activeTeamShift()&&navigator.onLine){connectTeamRealtime();syncSharedShift();}
+    checkTimedReminders();
+  }
 });
 render();
 handleAuthRedirect().then(async()=>{
@@ -2690,3 +2817,4 @@ handleAuthRedirect().then(async()=>{
 }).catch(error=>{
   appHydrating=false; cloud.message=authErrorMessage(error); if(cloud.session) setTimeout(()=>syncCloudState(),0); render(true);
 });
+setTimeout(()=>checkTimedReminders(),1500);

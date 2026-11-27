@@ -545,7 +545,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v52"));
+  assert.ok(sw.includes("medflow-shell-v53"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
@@ -712,6 +712,20 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(timedSummary.message.includes('14:30'));
   assert.equal(ordinarySummary.important,false);
   assert.equal(ordinarySummary.target,'inbox');
+}
+
+{
+  const now=new Date(2026,10,27,14,0,0,0).getTime();
+  const timedPatient={id:'patient-time',steps:[{id:'step-time',type:'xray',title:'Рентген',state:'active',time:'14:20'}]};
+  const withoutTime={id:'patient-flex',steps:[{id:'step-flex',type:'ecg',title:'ЭКГ',state:'active',time:'',timeFlexible:true}]};
+  const finished={id:'patient-done',steps:[{id:'step-done',type:'ct',title:'КТ',state:'done',time:'14:10'}]};
+  const candidates=api.timedNotificationCandidates({patients:[timedPatient,withoutTime,finished],incoming:[]},now);
+  assert.equal(candidates.length,1);
+  assert.equal(candidates[0].remaining,20);
+  assert.equal(candidates[0].lead,20);
+  assert.equal(api.timedReminderMessage(candidates[0]),'Через 20 мин: Рентген');
+  assert.ok(api.notificationSettingsView().includes('Все новые поручения'));
+  assert.ok(api.notificationSettingsView().includes('В момент начала'));
 }
 
 {

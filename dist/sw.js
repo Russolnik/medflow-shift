@@ -1,4 +1,4 @@
-const CACHE = 'medflow-shell-v52';
+const CACHE = 'medflow-shell-v53';
 const SHELL = ['./index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', event => {
