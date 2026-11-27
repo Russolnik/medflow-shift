@@ -545,12 +545,12 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v47"));
+  assert.ok(sw.includes("medflow-shell-v48"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname,'..','dist','manifest.webmanifest'),'utf8'));
-  assert.equal(manifest.start_url,'./?pwa=47');
+  assert.equal(manifest.start_url,'./?pwa=48');
   assert.equal(manifest.scope,'./');
   assert.equal(manifest.display,'standalone');
 }
@@ -609,6 +609,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(source.includes('Внимание к пациенту'));
   assert.ok(!source.includes('Гигиеническая осторожность'));
   assert.ok(source.includes('data-action="accept-incoming"'));
+  assert.ok(source.includes("modal={type:'confirm-incoming'"));
+  assert.ok(source.includes('data-action="confirm-incoming-decision"'));
+  assert.ok(source.includes('data-action="restore-incoming"'));
+  assert.ok(source.includes('class="rejected-incoming"'));
+  assert.ok(source.includes('Вернуть в «Новое»'));
   assert.ok(source.includes('name="entry-target"'));
   assert.ok(source.includes('},20000);'));
   assert.ok(source.includes('hasOpenWorkForm()'));

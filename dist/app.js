@@ -479,7 +479,7 @@ function applyRemoteState(remote, message='Данные загружены из 
   cloud.status='synced'; cloud.message=message;
 }
 function hasOpenWorkForm() {
-  return Boolean(modal && !['sync-conflict','password-update','import-backup-confirm','confirm-delete','confirm-new-shift','confirm-reset','confirm-transition'].includes(modal.type));
+  return Boolean(modal && !['sync-conflict','password-update','import-backup-confirm','confirm-delete','confirm-new-shift','confirm-reset','confirm-transition','confirm-incoming'].includes(modal.type));
 }
 function deferSyncForOpenForm() {
   if (!hasOpenWorkForm()) return false;
@@ -1271,6 +1271,9 @@ function pendingIncoming() {
     return Number(urgentB)-Number(urgentA)||(Number(a.inboxCreatedAt)||0)-(Number(b.inboxCreatedAt)||0);
   });
 }
+function rejectedIncoming() {
+  return (state.incoming||[]).filter(patient=>patient.inboxStatus==='rejected').sort((a,b)=>(Number(b.inboxResolvedAt)||0)-(Number(a.inboxResolvedAt)||0));
+}
 function incomingCard(patient) {
   const step=currentStep(patient), urgent=Boolean(step?.urgent);
   return `<article class="incoming-card ${urgent?'urgent':''}">
@@ -1281,11 +1284,21 @@ function incomingCard(patient) {
     ${canOperateTeam()?`<div class="incoming-actions"><button class="primary-btn" data-action="accept-incoming" data-patient="${patient.id}">Принять в очередь</button><button class="secondary-btn" data-action="reject-incoming" data-patient="${patient.id}">Отклонить</button></div>`:'<p class="inbox-role-note">Ожидает решения санитара</p>'}
   </article>`;
 }
+function rejectedIncomingCard(patient) {
+  const step=currentStep(patient);
+  return `<article class="incoming-card rejected-card">
+    <div class="incoming-head"><div><div class="patient-name">${esc(patient.surname)} <span class="patient-room">· п.${esc(patient.room||'?')}</span></div><small>${esc(departmentLabel(patient.departmentId))}${patient.inboxResolvedAt?` · отклонено ${fmtClock(patient.inboxResolvedAt)}`:''}</small></div><span class="badge rejected">ОТКЛОНЕНО</span></div>
+    <div class="incoming-task"><span>Поручение</span><b>${esc(step?.title||'Уточнить')}</b>${stepTimeLabel(step)?`<small>${esc(stepTimeLabel(step))}</small>`:''}</div>
+    ${canOperateTeam()?`<div class="incoming-actions single"><button class="secondary-btn" data-action="restore-incoming" data-patient="${patient.id}">Вернуть в «Новое»</button></div>`:'<p class="inbox-role-note">Вернуть поручение может санитар или владелец смены</p>'}
+  </article>`;
+}
 function inboxView() {
   const incoming=pendingIncoming();
+  const rejected=rejectedIncoming();
   return `<section class="inbox-intro"><p>Сюда можно отправить запись с поста или оставить её себе на подтверждение.</p></section>
     <div class="section-head"><h2>Ожидают решения</h2><span>${incoming.length}</span></div>
-    <div class="patient-list">${incoming.length?incoming.map(incomingCard).join(''):'<div class="empty">Новых поручений нет</div>'}</div>`;
+    <div class="patient-list">${incoming.length?incoming.map(incomingCard).join(''):'<div class="empty">Новых поручений нет</div>'}</div>
+    <details class="rejected-incoming" ${rejected.length?'':'open'}><summary><span>Отклонённые</span><strong>${rejected.length}</strong><i class="toggle-chevron" aria-hidden="true"></i></summary><div class="patient-list">${rejected.length?rejected.map(rejectedIncomingCard).join(''):'<div class="empty compact-empty">Отклонённых поручений нет</div>'}</div></details>`;
 }
 
 function directionsView() {
@@ -1596,6 +1609,12 @@ function modalView() {
     const workers=team.members.filter(member=>['owner','orderly'].includes(member.role)&&member.user_id!==cloud.session?.user?.id);
     if(!patient)return '';
     return `<div class="modal-backdrop" data-action="close"><section class="modal team-modal" onclick="event.stopPropagation()"><h2>Передать пациента</h2><p class="modal-sub">${esc(patient.surname)} · текущий этап продолжится, но ответственным станет выбранный сотрудник.</p><div class="role-options">${workers.map(member=>`<button data-action="team-handoff-confirm" data-patient="${esc(patient.id)}" data-member="${esc(member.user_id)}"><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}</span></button>`).join('')||'<p class="empty compact-empty">Других санитаров в смене пока нет</p>'}</div><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button></div></section></div>`;
+  }
+  if(modal.type==='confirm-incoming') {
+    const patient=state.incoming.find(item=>item.id===modal.patient), step=patient&&currentStep(patient);
+    if(!patient)return '';
+    const accepting=modal.decision==='accept';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>${accepting?'Принять поручение?':'Отклонить поручение?'}</h2><p class="modal-sub">${esc(patient.surname)} · п.${esc(patient.room||'?')} · ${esc(step?.title||'Уточнить')}. ${accepting?'После подтверждения поручение появится в основной очереди.':'Поручение переместится в «Отклонённые», откуда его можно будет вернуть.'}</p><div class="modal-actions"><button class="secondary-btn" data-action="close">Нет, назад</button><button class="${accepting?'primary-btn':'danger-btn'}" data-action="confirm-incoming-decision">${accepting?'Да, принять':'Да, отклонить'}</button></div></section></div>`;
   }
   if (modal.type === 'more-menu') {
     const activeMode=Boolean(state.settings.travelMode);
@@ -2059,7 +2078,7 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 async function handleAction(action, el, e) {
   e?.stopPropagation?.();
   const writeActions=new Set(['submit-quick','submit-patient','contact-save','contact-delete','department-save','direction-save','route-save','save-patient','confirm-import-backup','confirm-reset','confirm-reset-final','confirm-new-shift','confirm-new-shift-final']);
-  const operateActions=new Set(['accept-incoming','reject-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm']);
+  const operateActions=new Set(['accept-incoming','reject-incoming','confirm-incoming-decision','restore-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm']);
   const ownerOnlyActions=new Set(['confirm-reset','confirm-reset-final','confirm-new-shift','confirm-new-shift-final','confirm-import-backup']);
   if(activeTeamShift()&&writeActions.has(action)&&!canEditTeam()) { cloud.message='У этой роли нет права изменять смену'; return render(true); }
   if(activeTeamShift()&&operateActions.has(action)&&!canOperateTeam()) { cloud.message='Только санитар или владелец может менять ход выполнения'; return render(true); }
@@ -2480,21 +2499,33 @@ async function handleAction(action, el, e) {
     modal=null; save(); return render();
   }
   if (action==='accept-incoming' || action==='reject-incoming') {
-    const patient=state.incoming.find(item=>item.id===el.dataset.patient); if(!patient)return;
-    if(action==='accept-incoming'&&activeTeamShift()) {
+    const patient=state.incoming.find(item=>item.id===el.dataset.patient&&item.inboxStatus==='pending'); if(!patient)return;
+    modal={type:'confirm-incoming',patient:patient.id,decision:action==='accept-incoming'?'accept':'reject'};
+    return render(true);
+  }
+  if (action==='confirm-incoming-decision') {
+    const accepting=modal?.type==='confirm-incoming'&&modal.decision==='accept';
+    const patient=state.incoming.find(item=>item.id===modal?.patient&&item.inboxStatus==='pending'); if(!patient)return;
+    if(accepting&&activeTeamShift()) {
       try {
         const claim=await teamRpc('medflow_claim_patient',{target_shift:team.shiftId,target_patient:patient.id});
         if(!claim?.ok) { cloud.message=`Уже принял: ${claim?.display_name||'другой сотрудник'}`; await syncSharedShift({preferRemote:true}); return render(true); }
       } catch(error) { cloud.message=error.message||'Не удалось принять поручение'; return render(true); }
     }
-    armUndo(action==='accept-incoming'?'Поручение принято в очередь':'Поручение отклонено');
+    armUndo(accepting?'Поручение принято в очередь':'Поручение отклонено');
     const now=Date.now();
-    if(action==='accept-incoming') {
+    if(accepting) {
       patient.inboxStatus='accepted'; patient.inboxResolvedAt=now;
       const accepted=clone(patient); delete accepted.inboxStatus; delete accepted.inboxCreatedAt; delete accepted.inboxResolvedAt;
       const actor=currentActor(); accepted.acceptedBy=actor.id; accepted.acceptedByName=actor.name; accepted.updatedAt=now; accepted.updatedBy=actor.id;
       log(accepted,'Принято из раздела «Новое»'); state.patients.push(accepted);
     } else { patient.inboxStatus='rejected'; patient.inboxResolvedAt=now; log(patient,'Отклонено во входящих'); }
+    modal=null; save(); return render(true);
+  }
+  if (action==='restore-incoming') {
+    const patient=state.incoming.find(item=>item.id===el.dataset.patient&&item.inboxStatus==='rejected'); if(!patient)return;
+    armUndo('Поручение возвращено в «Новое»');
+    patient.inboxStatus='pending'; delete patient.inboxResolvedAt; patient.inboxRestoredAt=Date.now(); log(patient,'Возвращено в раздел «Новое»');
     save(); return render(true);
   }
   if (action==='handoff') {

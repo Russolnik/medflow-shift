@@ -338,6 +338,17 @@ h1 { font-size:22px; letter-spacing:-.03em; }
 .incoming-task span,.incoming-task small { color:var(--muted); font-size:9px; }
 .incoming-task b { min-width:0; font-size:12px; }
 .incoming-actions { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin-top:11px; }
+.incoming-actions.single { grid-template-columns:1fr; }
+.badge.rejected { color:#b7bec0; border-color:rgba(183,190,192,.18); background:rgba(183,190,192,.045); }
+.rejected-incoming { margin-top:18px; border:1px solid rgba(222,232,235,.09); border-radius:15px; background:rgba(255,255,255,.01); overflow:hidden; }
+.rejected-incoming > summary { min-height:52px; padding:10px 13px; display:grid; grid-template-columns:minmax(0,1fr) auto 14px; align-items:center; gap:10px; list-style:none; color:var(--muted); cursor:pointer; }
+.rejected-incoming > summary::-webkit-details-marker { display:none; }
+.rejected-incoming > summary span { color:#c3cacc; font-size:13px; font-weight:800; }
+.rejected-incoming > summary strong { min-width:24px; height:24px; display:grid; place-items:center; border-radius:8px; color:#aeb7b9; background:rgba(255,255,255,.045); font-size:10px; }
+.rejected-incoming[open] > summary { border-bottom:1px solid rgba(222,232,235,.07); }
+.rejected-incoming[open] > summary .toggle-chevron { transform:rotate(225deg); margin-top:4px; }
+.rejected-incoming > .patient-list { padding:10px; }
+.rejected-card { border-color:rgba(222,232,235,.08); background:rgba(10,14,18,.72); }
 .contacts-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:4px 0 14px; }
 .contacts-toolbar h2 { font-size:15px; }
 .contacts-toolbar span { display:block; margin-top:3px; color:var(--muted); font-size:10px; }
