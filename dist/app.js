@@ -318,7 +318,7 @@ function teamChangeSummary(localState,remoteState) {
   const localPatients=new Map((localState?.patients||[]).map(item=>[item.id,item]));
   const assigned=(remoteState?.patients||[]).filter(item=>item.assignedTo===ownId&&localPatients.get(item.id)?.assignedTo!==ownId);
   if(assigned.length) return {message:'Вам передан пациент',important:true,target:'today'};
-  return {message:'Общая смена обновлена',important:false,target:''};
+  return null;
 }
 function showTeamNotice(message='Общая смена обновлена', important=false, target='', allowSystem=true) {
   teamNotice=message;
@@ -1319,7 +1319,8 @@ function undoView() {
   return undoEntry ? `<div class="undo-toast" role="status"><span>${esc(undoEntry.label)}</span><button data-action="undo-last">Отменить</button></div>` : '';
 }
 function teamNoticeView() {
-  return teamNotice ? `<button class="team-notice ${teamNoticeImportant?'important':''}" data-action="team-notice-open" role="status"><span>${esc(teamNotice)}</span><b>${teamNoticeTarget?'Открыть':'Понятно'}</b></button>` : '';
+  const prominent=Boolean(teamNoticeTarget||teamNoticeImportant);
+  return teamNotice ? `<button class="team-notice ${prominent?'prominent':''} ${teamNoticeImportant?'important':''}" data-action="team-notice-open" role="status"><span>${esc(teamNotice)}</span><b>${teamNoticeTarget?'Открыть':'Понятно'}</b></button>` : '';
 }
 
 function navButton(id, icon, text, count=0) { return `<button class="nav-btn ${view===id?'active':''}" data-view="${id}"><b>${icon}</b>${text}${count?`<i class="nav-count">${count>99?'99+':count}</i>`:''}</button>`; }
@@ -1775,6 +1776,12 @@ function modalView() {
     if(!patient)return '';
     return `<div class="modal-backdrop" data-action="close"><section class="modal team-modal" onclick="event.stopPropagation()"><h2>Передать пациента</h2><p class="modal-sub">${esc(patient.surname)} · текущий этап продолжится, но ответственным станет выбранный сотрудник.</p><div class="role-options">${workers.map(member=>`<button data-action="team-handoff-confirm" data-patient="${esc(patient.id)}" data-member="${esc(member.user_id)}"><b>${esc(member.display_name)}</b><span>${esc(roleLabel(member.role))}</span></button>`).join('')||'<p class="empty compact-empty">Других санитаров в смене пока нет</p>'}</div><div class="modal-actions"><button class="secondary-btn" data-action="close">Отмена</button></div></section></div>`;
   }
+  if(modal.type==='confirm-takeover') {
+    const patient=state.patients.find(item=>item.id===modal.patient);
+    if(!patient)return '';
+    const previous=modal.previousName||actorName(patient.assignedTo,patient.assignedToName)||'другого сотрудника';
+    return `<div class="modal-backdrop" data-action="close"><section class="modal confirm-modal" onclick="event.stopPropagation()"><h2>Перенять пациента?</h2><p class="modal-sub">${esc(patient.surname)} сейчас в работе у ${esc(previous)}. Перехватывай только если сотрудник не может сам передать пациента — действие сохранится в истории.</p><div class="takeover-warning">После подтверждения ответственным станешь ты. У коллеги пациент освободится.</div><div class="modal-actions"><button class="secondary-btn" data-action="close">Нет, назад</button><button class="danger-btn" data-action="confirm-takeover" data-patient="${esc(patient.id)}">Перенять у ${esc(previous)}</button></div></section></div>`;
+  }
   if(modal.type==='confirm-incoming') {
     const patient=state.incoming.find(item=>item.id===modal.patient), step=patient&&currentStep(patient);
     if(!patient)return '';
@@ -2204,6 +2211,16 @@ function assignPatient(patient,userId=cloud.session?.user?.id) {
   patient.updatedAt=Date.now();patient.updatedBy=actor.id;
   return patient;
 }
+async function claimPatientForWork(patient) {
+  const actor=currentActor(), ownId=cloud.session?.user?.id||actor.id;
+  if(!activeTeamShift()) { assignPatient(patient,ownId); return {ok:true,newClaim:!patient.assignedTo}; }
+  if(patient.assignedTo&&patient.assignedTo!==ownId) return {ok:false,user_id:patient.assignedTo,display_name:actorName(patient.assignedTo,patient.assignedToName)};
+  const alreadyMine=patient.assignedTo===ownId;
+  const claim=await teamRpc('medflow_claim_patient',{target_shift:team.shiftId,target_patient:patient.id});
+  if(!claim?.ok) return claim||{ok:false};
+  assignPatient(patient,ownId);
+  return {...claim,ok:true,newClaim:!alreadyMine};
+}
 function nextWaitingStep(p) { return p.steps.find(s=>s.state==='waiting'); }
 function activateNext(p) { const next=nextWaitingStep(p); if(next) next.state='active'; return next; }
 function canContinueNow(p) { const step=currentStep(p); return step?.state==='in_progress' && !isOperationStep(step) && Boolean(nextWaitingStep(p)); }
@@ -2262,7 +2279,7 @@ function restoreArchivedStep(shiftId, patientId, stepId) {
 async function handleAction(action, el, e) {
   e?.stopPropagation?.();
   const writeActions=new Set(['submit-quick','submit-patient','contact-save','contact-delete','department-save','direction-save','route-save','save-patient','confirm-import-backup','confirm-reset','confirm-reset-final','confirm-new-shift','confirm-new-shift-final']);
-  const operateActions=new Set(['accept-incoming','reject-incoming','confirm-incoming-decision','restore-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm']);
+  const operateActions=new Set(['accept-incoming','reject-incoming','confirm-incoming-decision','restore-incoming','advance','advance-next','confirm-documents','confirm-transition','finish-operation','cancel-step','postpone-step','restore-step','restore-history-step','pin','confirm-delete-patient','team-handoff-confirm','confirm-takeover']);
   const ownerOnlyActions=new Set(['confirm-reset','confirm-reset-final','confirm-new-shift','confirm-new-shift-final','confirm-import-backup']);
   if(activeTeamShift()&&writeActions.has(action)&&!canEditTeam()) { cloud.message='У этой роли нет права изменять смену'; return render(true); }
   if(activeTeamShift()&&operateActions.has(action)&&!canOperateTeam()) { cloud.message='Только санитар или владелец может менять ход выполнения'; return render(true); }
@@ -2358,6 +2375,20 @@ async function handleAction(action, el, e) {
       if(!result?.ok) throw new Error('Передача не подтверждена');
       assignPatient(patient,member.user_id);log(patient,`Передано сотруднику: ${member.display_name}`);modal=null;save();return render(true);
     } catch(error){cloud.message=error.message||'Не удалось передать пациента';modal=null;return render(true);}
+  }
+  if(action==='confirm-takeover') {
+    const patient=state.patients.find(item=>item.id===(el.dataset.patient||modal?.patient));if(!patient)return;
+    const previous=modal?.previousName||actorName(patient.assignedTo,patient.assignedToName)||'другого сотрудника';
+    try {
+      const result=await teamRpc('medflow_takeover_patient',{target_shift:team.shiftId,target_patient:patient.id});
+      if(!result?.ok) throw new Error('Перехват не подтверждён');
+      const previousName=result.previous_display_name||previous;
+      assignPatient(patient);log(patient,`Перенял у ${previousName}`);modal=null;cloud.message=`Пациент перенят у ${previousName}`;save();return render(true);
+    } catch(error) {
+      modal=null;
+      cloud.message=/medflow_takeover_patient|schema cache/i.test(error.message||'')?'Нужно применить обновление базы для безопасного перехвата':(error.message||'Не удалось перенять пациента');
+      return render(true);
+    }
   }
   if (action==='toggle-travel-mode') { state.settings.travelMode=!state.settings.travelMode; save(); modal={type:'more-menu'}; return render(true); }
   if (action==='contact-add') { modal={type:'contact',contact:null}; return render(true); }
@@ -2536,7 +2567,7 @@ async function handleAction(action, el, e) {
     armUndo('Статус возвращён назад');
     if(s.state==='pickup') { s.state='in_or'; delete s.readyAt; delete s.pickedUpAt; log(p,'Отменена отметка «Позвонили — забирать»'); }
     else if(s.state==='in_or') { s.state='in_progress'; delete s.arrivedAt; log(p,'Отменена отметка доставки в оперблок'); }
-    else if(s.state==='in_progress') { s.state='active'; delete s.startedAt; delete s.preopCheck; if(s.documents) delete s.documents.start; log(p,'Отменено начало сопровождения'); }
+    else if(s.state==='in_progress') { s.state='active'; delete s.startedAt; delete s.preopCheck; if(s.documents) delete s.documents.start; p.assignedTo='';p.assignedToName='';queueTeamRelease(p.id);log(p,'Отменено начало сопровождения'); }
     modal={type:'details',patient:p.id}; save(); return render(true);
   }
   if (action==='restore-step') {
@@ -2607,6 +2638,13 @@ async function handleAction(action, el, e) {
     const startStatus=fd.get('start-documents'), finishStatus=fd.get('finish-documents');
     if (['start','continue'].includes(mode) && !DOCUMENT_STATUSES.includes(startStatus)) return;
     if (['finish','continue','operation-pickup','handoff','stop'].includes(mode) && !DOCUMENT_STATUSES.includes(finishStatus)) return;
+    if(['start','continue'].includes(mode)) {
+      try {
+        const claim=await claimPatientForWork(p);
+        if(!claim?.ok) { modal={type:'confirm-takeover',patient:p.id,previousName:claim?.display_name||'другого сотрудника'};return render(true); }
+        if(claim.newClaim) log(p,'Взят в работу');
+      } catch(error) { cloud.message=error.message||'Не удалось взять пациента в работу';modal=null;return render(true); }
+    }
     if(['finish','continue','handoff','stop'].includes(mode)) armUndo(mode==='stop'?(stopAction==='postpone-step'?'Этап перенесён':'Этап отменён'):mode==='handoff'?'Этап передан другому сотруднику':'Этап завершён');
     p.pinned=false;
     if (mode==='start') {
@@ -2639,14 +2677,8 @@ async function handleAction(action, el, e) {
   }
   if (action==='advance') {
     const p=state.patients.find(p=>p.id===el.dataset.patient), s=currentStep(p); if(!s)return;
-    if(activeTeamShift()&&!p.assignedTo) {
-      try {
-        const claim=await teamRpc('medflow_claim_patient',{target_shift:team.shiftId,target_patient:p.id});
-        if(!claim?.ok){cloud.message=`Пациент уже в работе у: ${claim?.display_name||'другого сотрудника'}`;await syncSharedShift({preferRemote:true});return render(true);}
-        assignPatient(p); log(p,'Взят в работу'); save();
-      } catch(error){cloud.message=error.message||'Не удалось взять пациента в работу';return render(true);}
-    } else if(activeTeamShift()&&p.assignedTo&&p.assignedTo!==cloud.session?.user?.id) {
-      cloud.message=`Пациент в работе у: ${actorName(p.assignedTo,p.assignedToName)||'другого сотрудника'}`;return render(true);
+    if(activeTeamShift()&&p.assignedTo&&p.assignedTo!==cloud.session?.user?.id) {
+      modal={type:'confirm-takeover',patient:p.id,previousName:actorName(p.assignedTo,p.assignedToName)||'другого сотрудника'};return render(true);
     }
     p.pinned=false;
     if (isOperationStep(s) && ['active','waiting'].includes(s.state)) { modal={type:'documents',mode:'start',patient:p.id}; return render(); }
@@ -2718,12 +2750,6 @@ async function handleAction(action, el, e) {
   if (action==='confirm-incoming-decision') {
     const accepting=modal?.type==='confirm-incoming'&&modal.decision==='accept';
     const patient=state.incoming.find(item=>item.id===modal?.patient&&item.inboxStatus==='pending'); if(!patient)return;
-    if(accepting&&activeTeamShift()) {
-      try {
-        const claim=await teamRpc('medflow_claim_patient',{target_shift:team.shiftId,target_patient:patient.id});
-        if(!claim?.ok) { cloud.message=`Уже принял: ${claim?.display_name||'другой сотрудник'}`; await syncSharedShift({preferRemote:true}); return render(true); }
-      } catch(error) { cloud.message=error.message||'Не удалось принять поручение'; return render(true); }
-    }
     armUndo(accepting?'Поручение принято в очередь':'Поручение отклонено');
     const now=Date.now();
     if(accepting) {

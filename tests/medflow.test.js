@@ -545,7 +545,7 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
 
 {
   const sw = fs.readFileSync(path.join(__dirname,'..','dist','sw.js'),'utf8');
-  assert.ok(sw.includes("medflow-shell-v53"));
+  assert.ok(sw.includes("medflow-shell-v54"));
   assert.ok(sw.includes("'./index.html', './styles.css', './app.js'"));
   assert.ok(sw.includes('ignoreSearch: true'));
   assert.ok(sw.includes("caches.match('./index.html')"));
@@ -712,6 +712,11 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   assert.ok(timedSummary.message.includes('14:30'));
   assert.equal(ordinarySummary.important,false);
   assert.equal(ordinarySummary.target,'inbox');
+  assert.equal(api.teamChangeSummary(local,local),null);
+  const acceptHandler=source.slice(source.indexOf("if (action==='confirm-incoming-decision')"),source.indexOf("if (action==='restore-incoming')"));
+  assert.ok(!acceptHandler.includes('medflow_claim_patient'));
+  assert.ok(source.includes("await claimPatientForWork(p)"));
+  assert.ok(source.includes("modal={type:'confirm-takeover'"));
 }
 
 {
@@ -816,6 +821,14 @@ const step = (title, state='waiting', type='other') => ({ id:title, title, state
   const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','006_enable_shared_shift_realtime.sql'),'utf8');
   assert.ok(migration.includes('publication supabase_realtime'));
   assert.ok(migration.includes('public.medflow_shifts'));
+}
+
+{
+  const migration=fs.readFileSync(path.join(__dirname,'..','supabase','migrations','007_safe_patient_takeover.sql'),'utf8');
+  assert.ok(migration.includes('medflow_takeover_patient'));
+  assert.ok(migration.includes("role in ('owner', 'orderly')"));
+  assert.ok(migration.includes('previous_display_name'));
+  assert.ok(migration.includes("notify pgrst, 'reload schema'"));
 }
 
 {
